@@ -1,4 +1,4 @@
-"""主界面：连接设备 / 实时波形 / 设备控制 / 录制 / 入口分析。"""
+"""主界面：连接设备 / 实时波形 / 设备控制 / 录制 / 分析入口 / 录制管理。"""
 
 import time
 from pathlib import Path
@@ -23,6 +23,7 @@ from core.serial_link import SerialLink, available_ports
 from core.version import APP_NAME, __version__
 from core import recorder as rec
 from ui.analysis_window import AnalysisWindow
+from ui.recordings_window import RecordingsWindow
 
 # 增益档位（显示名, CH1SET, CH2SET），与协议文档一致
 GAINS = [
@@ -99,7 +100,7 @@ class RingBuffer:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, demo_on_start: bool = False) -> None:
+    def __init__(self, generator_on_start: bool = False) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
         self.resize(1280, 800)
@@ -120,11 +121,11 @@ class MainWindow(QMainWindow):
         self.serial.log.connect(self.log)
 
         self.fs = 500.0
-        self.demo = None
-        self.demo_timer = QTimer(self)
-        self.demo_timer.setInterval(40)  # 40ms ≈ 20 个样本 @500Hz
-        self.demo_timer.timeout.connect(self.on_demo_tick)
-        self.demo_elapsed = 0.0
+        # 内部信号发生器（仅供打包自检验证，不在界面上出现）
+        self.generator = None
+        self._gen_timer = QTimer(self)
+        self._gen_timer.setInterval(40)
+        self._gen_timer.timeout.connect(self._on_generator_tick)
 
         self.recorder = rec.Recorder(self.sessions_dir)
         self.last_session: Path | None = None
@@ -133,7 +134,7 @@ class MainWindow(QMainWindow):
         cap = int(_MAX_FS * _RING_SECONDS)
         self.ring1 = RingBuffer(cap)
         self.ring2 = RingBuffer(cap)
-        self.batch_count = 0          # 供自检用
+        self.batch_count = 0          # 收到的数据批次（所有来源统一计数）
         self._last_batch = None
 
         self.paused = False
@@ -150,9 +151,9 @@ class MainWindow(QMainWindow):
         self.slow_timer.timeout.connect(self.refresh_status)
         self.slow_timer.start()
 
-        self.log("程序已启动。请先点「扫描设备」连接真机，或点「演示模式」体验全部功能。")
-        if demo_on_start:
-            self.toggle_demo(True)
+        self.log("程序已启动。请选择连接方式（无线蓝牙或串口USB线）后连接设备。")
+        if generator_on_start:
+            self._start_generator()
 
     # ================================================================ 界面搭建
 
@@ -179,13 +180,10 @@ class MainWindow(QMainWindow):
         self.btn_connect.clicked.connect(self.connect_selected)
         self.btn_disconnect = QPushButton("断开")
         self.btn_disconnect.clicked.connect(self.disconnect_link)
-        self.btn_demo = QPushButton("演示模式")
-        self.btn_demo.setCheckable(True)
-        self.btn_demo.toggled.connect(self.toggle_demo)
         self.lbl_state = QLabel("● 未连接")
         for w in (self.cmb_transport, self.btn_scan, self.cmb_device,
                   self.btn_ports, self.cmb_port, self.btn_connect,
-                  self.btn_disconnect, self.btn_demo, self.lbl_state):
+                  self.btn_disconnect, self.lbl_state):
             top.addWidget(w)
         self.lbl_state.setStyleSheet("color:#888; font-weight:bold;")
         top.addStretch(1)
@@ -197,7 +195,7 @@ class MainWindow(QMainWindow):
         self.lbl_battery = QLabel("电量：—")
         self.lbl_hr = QLabel("心率：—")
         self.lbl_lead = QLabel("电极：—")
-        self.lbl_frames = QLabel("数据帧：0（坏 0）")
+        self.lbl_frames = QLabel("数据批次：0（坏 0）")
         for w in (self.lbl_battery, self.lbl_hr, self.lbl_lead, self.lbl_frames):
             status.addWidget(w)
         status.addStretch(1)
@@ -211,6 +209,8 @@ class MainWindow(QMainWindow):
         for p in (self.plot1, self.plot2):
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("bottom", "时间", units="s")
+            p.disableAutoRange()      # 范围由软件按数据精确控制
+            p.setMenuEnabled(False)   # 禁掉右键菜单，避免误操作后视图漂移
         self.plot2.setXLink(self.plot1)
         self.curve1 = self.plot1.plot(pen=pg.mkPen("#1f77b4", width=1))
         self.curve2 = self.plot2.plot(pen=pg.mkPen("#2ca02c", width=1))
@@ -221,8 +221,12 @@ class MainWindow(QMainWindow):
         waves = QVBoxLayout()
         wave_bar = QHBoxLayout()
         self.btn_pause = QPushButton("暂停显示")
+        self.btn_pause.setToolTip("暂停滚动后可用鼠标滚轮/拖动放大查看细节")
         self.btn_pause.setCheckable(True)
         self.btn_pause.toggled.connect(self.set_paused)
+        self.btn_clear = QPushButton("清空数据")
+        self.btn_clear.setToolTip("清空当前屏幕显示的波形和统计（不影响正在进行的录制）")
+        self.btn_clear.clicked.connect(self.clear_display)
         lbl_win = QLabel("时间窗")
         self.cmb_window = QComboBox()
         for name, _ in DISPLAY_SECONDS:
@@ -231,9 +235,10 @@ class MainWindow(QMainWindow):
         self.cmb_window.currentIndexChanged.connect(
             lambda _: self.refresh_plots())
         wave_bar.addWidget(self.btn_pause)
+        wave_bar.addWidget(self.btn_clear)
+        wave_bar.addStretch(1)
         wave_bar.addWidget(lbl_win)
         wave_bar.addWidget(self.cmb_window)
-        wave_bar.addStretch(1)
         waves.addLayout(wave_bar)
         waves.addWidget(self.plot1, stretch=5)
         waves.addWidget(self.plot2, stretch=3)
@@ -294,12 +299,12 @@ class MainWindow(QMainWindow):
         self.lbl_rec = QLabel("未在录制")
         self.btn_analyze_last = QPushButton("分析最近一次录制")
         self.btn_analyze_last.clicked.connect(self.analyze_last)
-        self.btn_analyze_hist = QPushButton("分析历史录制…")
-        self.btn_analyze_hist.clicked.connect(self.analyze_history)
+        self.btn_records = QPushButton("录制记录…")
+        self.btn_records.clicked.connect(self.open_recordings)
         lay.addWidget(self.btn_record, 0, 0)
         lay.addWidget(self.lbl_rec, 0, 1)
         lay.addWidget(self.btn_analyze_last, 1, 0, 1, 2)
-        lay.addWidget(self.btn_analyze_hist, 2, 0, 1, 2)
+        lay.addWidget(self.btn_records, 2, 0, 1, 2)
         return g
 
     # ================================================================ 数据流
@@ -312,12 +317,16 @@ class MainWindow(QMainWindow):
         if self.recorder.active:
             self.recorder.append(batch)
 
-    def on_demo_tick(self) -> None:
-        if self.demo is None:
+    def _start_generator(self) -> None:
+        self.generator = DemoSource()
+        self.parser.filter_ch1 = False
+        self.parser.filter_ch2 = False
+        self._gen_timer.start()
+
+    def _on_generator_tick(self) -> None:
+        if self.generator is None:
             return
-        self.demo_elapsed += 0.04
-        self.demo.tick_minutes(self.demo_elapsed)
-        for batch in self.demo.next_batches(20):
+        for batch in self.generator.next_batches(20):
             self.on_batch(batch)
 
     # ================================================================ 连接
@@ -378,7 +387,6 @@ class MainWindow(QMainWindow):
             self.ble.disconnect()
 
     def on_scan_hit(self, addr: str, name: str) -> None:
-        # 同一地址去重
         for i in range(self.cmb_device.count()):
             if self.cmb_device.itemData(i) == addr:
                 return
@@ -416,52 +424,11 @@ class MainWindow(QMainWindow):
         self.cmb_port.setEnabled(not connected and self.serial_mode)
         self.cmb_transport.setEnabled(not connected)
 
-    # ================================================================ 演示模式
-
-    def toggle_demo(self, on: bool) -> None:
-        if on:
-            if self.ble._state == ST_CONNECTED or self.serial.isRunning():
-                self.disconnect_link()
-            if self.recorder.active:
-                self.toggle_record(force_stop=True)
-            self.demo = DemoSource()
-            self.demo_elapsed = 0.0
-            self.ring1.clear()
-            self.ring2.clear()
-            self.parser.filter_ch1 = False
-            self.parser.filter_ch2 = False
-            self.demo_timer.start()
-            self.btn_demo.setText("退出演示模式")
-            self.btn_scan.setEnabled(False)
-            self.btn_connect.setEnabled(False)
-            self.cmb_device.setEnabled(False)
-            self.btn_ports.setEnabled(False)
-            self.cmb_port.setEnabled(False)
-            self.cmb_transport.setEnabled(False)
-            self.btn_disconnect.setEnabled(False)
-            self.log("演示模式已开启：正在播放模拟心电（可正常录制与分析）。")
-        else:
-            self.demo_timer.stop()
-            self.demo = None
-            self.btn_demo.setText("演示模式")
-            self.btn_scan.setEnabled(True)
-            self.btn_connect.setEnabled(True)
-            self.cmb_transport.setEnabled(True)
-            self._set_connected_ui(False)
-            self.lbl_state.setText("● 未连接")
-            self.lbl_state.setStyleSheet("color:#888; font-weight:bold;")
-            self.log("演示模式已退出。")
-
     # ================================================================ 设备设置
 
     def apply_settings(self) -> None:
-        if self.demo is not None:
-            self._settings_snapshot = {
-                "gain": "演示", "sample_rate": "500Hz",
-                "filter_ch1": False, "filter_ch2": False,
-                "note": "演示数据（固定500Hz）",
-            }
-            self.log("演示模式下设置不会发给真实设备（模拟信号固定为 500Hz）。")
+        if self.generator is not None:
+            self.log("内部信号源运行中，设置不会发给真实设备。")
             return
         gi = self.cmb_gain.currentIndex()
         name_g, ch1set, ch2set = GAINS[max(0, gi)]
@@ -479,20 +446,18 @@ class MainWindow(QMainWindow):
             self.ring2.clear()
             self.log(f"采样率从 {old_fs:.0f}Hz 切到 {fs:.0f}Hz，波形已重新开始。")
 
-        settings = {
+        self._settings_snapshot = {
             "gain": name_g, "ch1set": f"0x{ch1set:02X}",
             "ch2set": f"0x{ch2set:02X}", "sample_rate": f"{fs:.0f}Hz",
             "filter_ch1": bool(f1), "filter_ch2": bool(f2),
         }
-        self._settings_snapshot = settings
         if self.serial_mode:
             self.serial.send_command(ch1set, ch2set, sr_code, f1, f2, 1)
         else:
             self.ble.send_command(ch1set, ch2set, sr_code, f1, f2, 1)
 
     def stop_stream(self) -> None:
-        if self.demo is not None:
-            self.log("演示模式下没有真实数据流可暂停。")
+        if self.generator is not None:
             return
         gi = max(0, self.cmb_gain.currentIndex())
         _, ch1set, ch2set = GAINS[gi]
@@ -515,25 +480,56 @@ class MainWindow(QMainWindow):
         if not paused:
             self.refresh_plots()
 
+    def clear_display(self) -> None:
+        self.ring1.clear()
+        self.ring2.clear()
+        self.parser.reset_stats()
+        self.batch_count = 0
+        self._last_batch = None
+        self.curve1.setData([])
+        self.curve2.setData([])
+        self.lbl_battery.setText("电量：—")
+        self.lbl_hr.setText("心率：—")
+        self.lbl_lead.setText("电极：—")
+        self.lbl_frames.setText("数据批次：0（坏 0）")
+        if self.recorder.active:
+            self.log("已清空屏幕显示。正在进行的录制不受影响，会继续保存。")
+        else:
+            self.log("已清空屏幕显示和统计数据。")
+
     def refresh_plots(self) -> None:
+        """显示规则：X轴固定为最新时间窗；Y轴按可见数据收紧跟随。
+
+        电极脱落/恢复等瞬态把幅度撑大时，波形恢复后 Y 轴会自动收回来，
+        始终贴着信号显示；暂停显示时不动视图，可用鼠标自由缩放细看。
+        """
         if self.paused:
             return
         secs = DISPLAY_SECONDS[max(0, self.cmb_window.currentIndex())][1]
         n = int(self.fs * secs)
-        for ring, curve in ((self.ring1, self.curve1), (self.ring2, self.curve2)):
+        for ring, curve, p in ((self.ring1, self.curve1, self.plot1),
+                               (self.ring2, self.curve2, self.plot2)):
             gstart, data = ring.tail(n)
             if len(data) == 0:
                 curve.setData([])
                 continue
             x = (gstart + np.arange(len(data))) / self.fs
             curve.setData(x, data)
+            p.setXRange(x[0], x[-1], padding=0)
+            ymin = float(data.min())
+            ymax = float(data.max())
+            if ymin >= ymax:
+                pad = abs(ymin) * 0.1 + 1e-6
+            else:
+                pad = (ymax - ymin) * 0.15
+            p.setYRange(ymin - pad, ymax + pad, padding=0)
 
     def refresh_status(self) -> None:
         b = self._last_batch
         if b is not None:
             batt = b["battery"]
             self.lbl_battery.setText(
-                f"电量：{batt}%" if batt is not None else "电量：—（串口无电量）")
+                f"电量：{batt}%" if batt is not None else "电量：—")
             self.lbl_hr.setText(f"心率：{b['heart_rate']} bpm")
             if b["lead_off"]:
                 self.lbl_lead.setText("电极：脱落！")
@@ -544,11 +540,8 @@ class MainWindow(QMainWindow):
             else:
                 self.lbl_lead.setText("电极：正常")
                 self.lbl_lead.setStyleSheet("color:#080;")
-        if self.demo is not None:
-            self.lbl_frames.setText(f"数据批次：{self.batch_count}（演示）")
-        else:
-            self.lbl_frames.setText(
-                f"数据帧：{self.parser.frames_ok}（坏 {self.parser.frames_bad}）")
+        self.lbl_frames.setText(
+            f"数据批次：{self.batch_count}（坏 {self.parser.frames_bad}）")
         if self.recorder.active:
             self.lbl_rec.setText(
                 f"录制中 {self._fmt(self.recorder.elapsed_s())}"
@@ -568,30 +561,28 @@ class MainWindow(QMainWindow):
                 self.last_session = folder
                 self.log(f"录制已保存到：{folder}")
             self.btn_record.setText("● 开始录制")
-            self.lbl_rec.setText(f"已保存（{folder.name if folder else ''}）")
+            self.lbl_rec.setText(
+                f"已保存（{folder.name if folder else '未录制'}）")
             self.cmb_gain.setEnabled(True)
             self.cmb_sr.setEnabled(True)
             self.btn_analyze_last.setEnabled(True)
             return
-        if self.demo is None and not (self.ble._state == ST_CONNECTED
-                                      or self.serial.isRunning()):
+        if self.generator is None and not (self.ble._state == ST_CONNECTED
+                                           or self.serial.isRunning()):
             QMessageBox.information(
                 self, "无法录制",
-                "还没有数据来源：请先连接设备（蓝牙或串口），或开启演示模式。")
+                "还没有数据来源：请先连接设备（蓝牙或串口）。")
             return
-        if self.demo is not None:
-            self.apply_settings()  # 演示模式下刷新为演示快照
-            settings = self._settings_snapshot
-        else:
-            settings = getattr(self, "_settings_snapshot", None) or {
-                "gain": GAINS[max(0, self.cmb_gain.currentIndex())][0],
-                "sample_rate": f"{self.fs:.0f}Hz",
-                "filter_ch1": self.chk_f1.isChecked(),
-                "filter_ch2": self.chk_f2.isChecked(),
-            }
+        settings = getattr(self, "_settings_snapshot", None) or {
+            "gain": GAINS[max(0, self.cmb_gain.currentIndex())][0],
+            "sample_rate": f"{self.fs:.0f}Hz",
+            "filter_ch1": self.chk_f1.isChecked(),
+            "filter_ch2": self.chk_f2.isChecked(),
+        }
         folder = self.recorder.start(
-            fs=500.0 if self.demo is not None else self.fs,
-            source="demo" if self.demo is not None else "ble",
+            fs=self.fs,
+            source="generator" if self.generator is not None
+            else ("serial" if self.serial_mode else "ble"),
             settings=settings)
         self.btn_record.setText("■ 停止录制")
         self.lbl_rec.setText("录制中 00:00")
@@ -606,17 +597,12 @@ class MainWindow(QMainWindow):
             return
         self.open_analysis(self.last_session)
 
-    def analyze_history(self) -> None:
-        sessions = rec.list_sessions(self.sessions_dir)
-        if not sessions:
-            QMessageBox.information(self, "提示", "还没有任何历史录制。")
-            return
-        labels = [s["label"] for s in sessions]
-        name, ok = QInputDialog.getItem(
-            self, "选择录制", "选择要分析的录制：", labels, 0, False)
-        if not ok:
-            return
-        self.open_analysis(sessions[labels.index(name)]["folder"])
+    def open_recordings(self) -> None:
+        win = RecordingsWindow(self)
+        win.setAttribute(Qt.WA_DeleteOnClose)
+        win.destroyed.connect(lambda _=None: self._forget_window(win, record=True))
+        win.show()
+        win.reload()
 
     def open_analysis(self, folder: Path) -> None:
         try:
@@ -630,9 +616,16 @@ class MainWindow(QMainWindow):
         self.analysis_windows.append(win)
         win.run_analysis()
 
-    def _forget_window(self, w) -> None:
+    def _forget_window(self, w, record: bool = False) -> None:
         if w in self.analysis_windows:
             self.analysis_windows.remove(w)
+        if record:
+            self._record_windows = [x for x in getattr(self, "_record_windows", [])
+                                    if x is not w]
+
+    def is_open_in_analysis(self, folder: Path) -> bool:
+        return any(getattr(w, "folder", None) == folder
+                   for w in self.analysis_windows)
 
     # ================================================================ 其他
 
@@ -643,7 +636,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self.recorder.active:
             self.recorder.stop()
-        self.demo_timer.stop()
+        self._gen_timer.stop()
         self.serial.disconnect()
         self.serial.wait(2000)
         self.ble.shutdown()

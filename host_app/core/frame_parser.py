@@ -76,6 +76,11 @@ class FrameParser:
         self.filter_ch1 = False
         self.filter_ch2 = False
 
+    def reset_stats(self) -> None:
+        """清空好帧/坏帧计数（配合界面"清空数据"）。"""
+        self.frames_ok = 0
+        self.frames_bad = 0
+
     def feed(self, buf: bytes) -> Optional[dict]:
         """解析一帧。帧头/CRC/长度任一不对返回 None，否则返回:
         {"ch1": [4个电压V], "ch2": [...], "battery": int,

@@ -128,7 +128,7 @@ def load_session(folder) -> dict:
 
 
 def list_sessions(sessions_dir) -> list:
-    """列出全部历史录制（新的在前），返回 [{folder, meta, duration_s}]。
+    """列出全部历史录制（新的在前），返回 [{folder, meta, duration_s, label}]。
     meta 缺失/数据为空的目录跳过。"""
     root = Path(sessions_dir)
     if not root.exists():
@@ -145,10 +145,27 @@ def list_sessions(sessions_dir) -> list:
         fs = float(meta.get("fs", 500.0))
         if n_rows <= 0:
             continue
+        name = meta.get("name") or folder.name
         out.append({
             "folder": folder,
             "meta": meta,
             "duration_s": n_rows / fs,
-            "label": f"{folder.name}  （{n_rows / fs / 60:.1f} 分钟）",
+            "name": name,
+            "label": f"{name}（{n_rows / fs / 60:.1f} 分钟）",
         })
     return out
+
+
+def set_session_name(folder, name: str) -> None:
+    """修改录制的显示名（写入 meta.json 的 name 字段，不动文件夹）。"""
+    folder = Path(folder)
+    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    meta["name"] = name.strip() or folder.name
+    (folder / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def delete_session(folder) -> None:
+    """删除一次录制的全部文件（不可恢复，调用方需先确认）。"""
+    import shutil
+    shutil.rmtree(folder, ignore_errors=True)

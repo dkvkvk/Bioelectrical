@@ -2,8 +2,7 @@
 
 用法:
     HeartHRV.exe              正常启动
-    HeartHRV.exe --demo       直接进入演示模式
-    HeartHRV.exe --selfcheck  自检：演示模式跑几秒自动退出，结果同时
+    HeartHRV.exe --selfcheck  自检：内部信号源跑几秒自动退出，结果同时
                               写到 数据目录/logs/selfcheck.txt（供云端
                               构建自动验证打包出的exe能否正常运行）
 """
@@ -61,10 +60,10 @@ def main() -> int:
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    demo = "--demo" in sys.argv
+    demo = False
     selfcheck = "--selfcheck" in sys.argv
 
-    win = MainWindow(demo_on_start=demo or selfcheck)
+    win = MainWindow(generator_on_start=demo or selfcheck)
     win.show()
 
     if selfcheck:

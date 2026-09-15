@@ -2,4 +2,4 @@
 
 APP_NAME = "心电HRV采集分析"
 APP_NAME_EN = "HeartHRV"
-__version__ = "1.0.0"
+__version__ = "1.1.0"

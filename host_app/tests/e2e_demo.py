@@ -25,7 +25,7 @@ SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "e2e_shots")
 os.makedirs(SHOTS, exist_ok=True)
 
 app = QApplication(sys.argv)
-win = MainWindow(demo_on_start=True)
+win = MainWindow(generator_on_start=True)
 win.show()
 
 state = {"step": 0, "folder": None, "aw": None}
