@@ -7,7 +7,9 @@
 - 标志性元素：模块路径标签（如 ACQ / LIVE），说明所在位置。
 """
 
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import QLabel
 
 # ---- 主题令牌（与前端规范一致，禁止在界面代码里另配色）----
 INK = "#14171C"          # 主文字
@@ -209,3 +211,32 @@ def pathtag(text: str):
 
 def color(hex_str: str) -> QColor:
     return QColor(hex_str)
+
+
+class PlotHint(QLabel):
+    """居中悬浮在绘图区上的提示文字。
+
+    用 Qt 原生 QLabel 实现——不依赖绘图库的文字元素渲染（当前
+    pyqtgraph/Qt 组合下 TextItem 不显示），自动跟随绘图区尺寸居中。
+    """
+
+    def __init__(self, text: str, parent, point_size: int = 11) -> None:
+        super().__init__(text, parent)
+        self.setProperty("muted", True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet(
+            f"font-size: {point_size}pt; background: transparent;")
+        parent.installEventFilter(self)
+        self.adjustSize()
+        self._center()
+
+    def _center(self) -> None:
+        p = self.parentWidget()
+        if p is not None:
+            self.move((p.width() - self.width()) // 2,
+                      (p.height() - self.height()) // 2)
+
+    def eventFilter(self, obj, ev) -> bool:
+        if ev.type() == QEvent.Resize:
+            self._center()
+        return False

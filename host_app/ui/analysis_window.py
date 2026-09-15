@@ -15,8 +15,8 @@ from PySide6.QtWidgets import (
 from core import recorder as rec
 from core.hrv import HrvResult, analyze
 from core.theme import (
-    ACCENT, DANGER, LINE, MARK_R, MUTED, RR_LINE, SUCCESS, WARNING,
-    mono_font, pathtag,
+    ACCENT, DANGER, LINE, MARK_R, MUTED, RR_LINE, PlotHint, SUCCESS,
+    WARNING, mono_font, pathtag,
 )
 
 # 指标定义: (结果键, 显示名+单位, 含义)
@@ -100,6 +100,10 @@ class AnalysisWindow(QMainWindow):
             p.showGrid(x=True, y=True, alpha=0.18)
             p.getAxis("bottom").setPen(LINE)
             p.getAxis("left").setPen(LINE)
+        self.psd_hint = PlotHint(
+            "数据不足2分钟，未计算频域指标\n（标准短时HRV分析建议录制5分钟）",
+            self.plot_psd, point_size=10)
+        self.psd_hint.hide()
         grid.addWidget(self.plot_ecg, 0, 0)
         grid.addWidget(self.plot_rr, 0, 1)
         grid.addWidget(self.plot_psd, 1, 0)
@@ -273,13 +277,11 @@ class AnalysisWindow(QMainWindow):
         r = self.result
         self.plot_psd.clear()
         if r is None or r.freq is None:
-            text = pg.TextItem(
-                "数据不足2分钟，未计算频域指标\n（标准短时HRV分析建议录制5分钟）",
-                color=WARNING, anchor=(0.5, 0.5))
-            self.plot_psd.addItem(text)
             self.plot_psd.setXRange(0, 0.4)
             self.plot_psd.setYRange(0, 1)
+            self.psd_hint.show()
             return
+        self.psd_hint.hide()
         freqs = r.freq["_freqs"]
         psd = r.freq["_psd"]
         self.plot_psd.plot(freqs, psd, pen=pg.mkPen(ACCENT, width=1),

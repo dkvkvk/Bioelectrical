@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
     QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
@@ -21,8 +21,8 @@ from core.frame_parser import FrameParser
 from core.paths import recordings_dir
 from core.serial_link import SerialLink, available_ports
 from core.theme import (
-    ACCENT, DANGER, LINE, MUTED, QUIET, SUCCESS, WARNING, WAVE_CH1,
-    WAVE_CH2, mono_font, pathtag,
+    ACCENT, DANGER, LINE, MUTED, QUIET, SUCCESS, SURFACE_SUBTLE, WARNING,
+    WAVE_CH1, WAVE_CH2, PlotHint, mono_font, pathtag,
 )
 from core.version import APP_NAME, __version__
 from core import recorder as rec
@@ -214,6 +214,7 @@ class MainWindow(QMainWindow):
                             foreground="#14171C")
         self.plot1 = pg.PlotWidget(title="通道1（去直流显示）")
         self.plot2 = pg.PlotWidget(title="通道2（去直流显示）")
+        self._empty_hints = []
         for p in (self.plot1, self.plot2):
             p.showGrid(x=True, y=True, alpha=0.18)
             p.getAxis("bottom").setPen(LINE)
@@ -221,7 +222,14 @@ class MainWindow(QMainWindow):
             p.setLabel("bottom", "时间", units="s")
             p.disableAutoRange()      # 范围由软件按数据精确控制
             p.setMenuEnabled(False)   # 禁掉右键菜单，避免误操作后视图漂移
+        # 两通道 X/Y 全联动：时间窗一致、幅度刻度一致，波形可直接对比
         self.plot2.setXLink(self.plot1)
+        self.plot2.setYLink(self.plot1)
+        self.plot1.setXRange(0, 10, padding=0)
+        self.plot1.setYRange(-1, 1, padding=0)
+        for p in (self.plot1, self.plot2):
+            self._empty_hints.append(PlotHint("等待设备数据…", p))
+            self._empty_hints[-1].hide()
         self.curve1 = self.plot1.plot(pen=pg.mkPen(WAVE_CH1, width=1))
         self.curve2 = self.plot2.plot(pen=pg.mkPen(WAVE_CH2, width=1))
         for c in (self.curve1, self.curve2):
@@ -512,35 +520,54 @@ class MainWindow(QMainWindow):
             self.log("已清空屏幕显示和统计数据。")
 
     def refresh_plots(self) -> None:
-        """显示规则：X轴固定为最新时间窗；Y轴按可见数据收紧跟随。
+        """显示规则：X轴固定为最新时间窗；两通道共用同一Y刻度。
 
-        显示时减去可见窗口的中位值（去直流）：设备滤波输出本身带直流
-        水平，原始值可能整体偏正/偏负，去直流后波形围绕0显示、形态直观。
-        只影响显示——录制保存的仍是原始数据，分析精度不受影响。
-        电极脱落/恢复等瞬态撑大幅度后，Y 轴会自动收紧回来；暂停显示时
-        不动视图，可用鼠标自由缩放细看。
+        - 两通道来自同一路数据流，X/Y 全联动：时间窗一致、幅度刻度
+          一致，通道间的幅度大小可以直接对比。
+        - 显示时减去各自可见窗口的中位值（去直流），波形围绕0显示；
+          只影响显示，录制保存的仍是原始数据。
+        - 没有数据时绘图区用浅灰底 + "等待设备数据"提示，不显示空白。
+        - 暂停显示时不动视图，可用鼠标自由缩放细看。
         """
         if self.paused:
             return
         secs = DISPLAY_SECONDS[max(0, self.cmb_window.currentIndex())][1]
         n = int(self.fs * secs)
-        for ring, curve, p in ((self.ring1, self.curve1, self.plot1),
-                               (self.ring2, self.curve2, self.plot2)):
-            gstart, data = ring.tail(n)
-            if len(data) == 0:
-                curve.setData([])
-                continue
-            x = (gstart + np.arange(len(data))) / self.fs
-            disp = data - float(np.median(data))
-            curve.setData(x, disp)
-            p.setXRange(x[0], x[-1], padding=0)
-            ymin = float(disp.min())
-            ymax = float(disp.max())
-            if ymin >= ymax:
-                pad = abs(ymin) * 0.1 + 1e-6
-            else:
-                pad = (ymax - ymin) * 0.15
-            p.setYRange(ymin - pad, ymax + pad, padding=0)
+        g1, d1 = self.ring1.tail(n)
+        g2, d2 = self.ring2.tail(n)
+
+        if len(d1) == 0 and len(d2) == 0:
+            for p, hint in zip((self.plot1, self.plot2), self._empty_hints):
+                if not hint.isVisible():
+                    p.setBackground(SURFACE_SUBTLE)
+                    hint.show()
+                    p.setXRange(0, 10, padding=0)
+                    p.setYRange(-1, 1, padding=0)
+            return
+        for p, hint in zip((self.plot1, self.plot2), self._empty_hints):
+            if hint.isVisible():
+                p.setBackground("#FFFFFF")
+                hint.hide()
+
+        x1 = (g1 + np.arange(len(d1))) / self.fs
+        disp1 = d1 - float(np.median(d1)) if len(d1) else d1
+        disp2 = d2 - float(np.median(d2)) if len(d2) else d2
+        self.curve1.setData(x1, disp1)
+        self.curve2.setData(x1[-len(d2):] if len(d2) else x1[:0], disp2)
+
+        # 两通道合并计算统一Y范围（Y已联动，只需设在plot1上）
+        ymins, ymaxs = [], []
+        for d in (disp1, disp2):
+            if len(d):
+                ymins.append(float(d.min()))
+                ymaxs.append(float(d.max()))
+        ymin, ymax = min(ymins), max(ymaxs)
+        if ymin >= ymax:
+            pad = abs(ymin) * 0.1 + 1e-6
+        else:
+            pad = (ymax - ymin) * 0.15
+        self.plot1.setXRange(x1[0], x1[-1], padding=0)
+        self.plot1.setYRange(ymin - pad, ymax + pad, padding=0)
 
     def refresh_status(self) -> None:
         b = self._last_batch
