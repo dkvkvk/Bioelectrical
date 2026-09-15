@@ -259,8 +259,8 @@ class MainWindow(QMainWindow):
         wave_bar.addWidget(lbl_win)
         wave_bar.addWidget(self.cmb_window)
         waves.addLayout(wave_bar)
-        waves.addWidget(self.plot1, stretch=5)
-        waves.addWidget(self.plot2, stretch=3)
+        waves.addWidget(self.plot1, stretch=1)
+        waves.addWidget(self.plot2, stretch=1)
         mid.addLayout(waves, stretch=5)
 
         side = QVBoxLayout()
