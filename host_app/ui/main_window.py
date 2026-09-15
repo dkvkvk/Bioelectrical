@@ -20,6 +20,10 @@ from core.demo_source import DemoSource
 from core.frame_parser import FrameParser
 from core.paths import recordings_dir
 from core.serial_link import SerialLink, available_ports
+from core.theme import (
+    ACCENT, DANGER, LINE, MUTED, QUIET, SUCCESS, WARNING, WAVE_CH1,
+    WAVE_CH2, mono_font, pathtag,
+)
 from core.version import APP_NAME, __version__
 from core import recorder as rec
 from ui.analysis_window import AnalysisWindow
@@ -165,6 +169,7 @@ class MainWindow(QMainWindow):
 
         # ---- 顶部：连接区 ----
         top = QHBoxLayout()
+        top.addWidget(pathtag("ACQ / LIVE"))
         self.cmb_transport = QComboBox()
         self.cmb_transport.addItems(["无线蓝牙", "串口（USB线）"])
         self.cmb_transport.currentIndexChanged.connect(self.on_transport_changed)
@@ -177,6 +182,7 @@ class MainWindow(QMainWindow):
         self.cmb_port = QComboBox()
         self.cmb_port.setMinimumWidth(200)
         self.btn_connect = QPushButton("连接")
+        self.btn_connect.setProperty("variant", "primary")
         self.btn_connect.clicked.connect(self.connect_selected)
         self.btn_disconnect = QPushButton("断开")
         self.btn_disconnect.clicked.connect(self.disconnect_link)
@@ -185,35 +191,39 @@ class MainWindow(QMainWindow):
                   self.btn_ports, self.cmb_port, self.btn_connect,
                   self.btn_disconnect, self.lbl_state):
             top.addWidget(w)
-        self.lbl_state.setStyleSheet("color:#888; font-weight:bold;")
+        self.lbl_state.setStyleSheet(f"color:{QUIET}; font-weight:bold;")
         top.addStretch(1)
         root.addLayout(top)
         self._apply_transport_visibility()
 
-        # ---- 状态行 ----
+        # ---- 状态行（数值用等宽字体） ----
         status = QHBoxLayout()
         self.lbl_battery = QLabel("电量：—")
         self.lbl_hr = QLabel("心率：—")
         self.lbl_lead = QLabel("电极：—")
         self.lbl_frames = QLabel("数据批次：0（坏 0）")
         for w in (self.lbl_battery, self.lbl_hr, self.lbl_lead, self.lbl_frames):
+            w.setFont(mono_font())
             status.addWidget(w)
         status.addStretch(1)
         root.addLayout(status)
 
         # ---- 中部：波形 + 右侧面板 ----
         mid = QHBoxLayout()
-        pg.setConfigOptions(antialias=False)
+        pg.setConfigOptions(antialias=False, background="#FFFFFF",
+                            foreground="#14171C")
         self.plot1 = pg.PlotWidget(title="通道1（去直流显示）")
         self.plot2 = pg.PlotWidget(title="通道2（去直流显示）")
         for p in (self.plot1, self.plot2):
-            p.showGrid(x=True, y=True, alpha=0.25)
+            p.showGrid(x=True, y=True, alpha=0.18)
+            p.getAxis("bottom").setPen(LINE)
+            p.getAxis("left").setPen(LINE)
             p.setLabel("bottom", "时间", units="s")
             p.disableAutoRange()      # 范围由软件按数据精确控制
             p.setMenuEnabled(False)   # 禁掉右键菜单，避免误操作后视图漂移
         self.plot2.setXLink(self.plot1)
-        self.curve1 = self.plot1.plot(pen=pg.mkPen("#1f77b4", width=1))
-        self.curve2 = self.plot2.plot(pen=pg.mkPen("#2ca02c", width=1))
+        self.curve1 = self.plot1.plot(pen=pg.mkPen(WAVE_CH1, width=1))
+        self.curve2 = self.plot2.plot(pen=pg.mkPen(WAVE_CH2, width=1))
         for c in (self.curve1, self.curve2):
             c.setDownsampling(auto=True, method="peak")
             c.setClipToView(True)
@@ -225,6 +235,7 @@ class MainWindow(QMainWindow):
         self.btn_pause.setCheckable(True)
         self.btn_pause.toggled.connect(self.set_paused)
         self.btn_clear = QPushButton("清空数据")
+        self.btn_clear.setProperty("variant", "danger")
         self.btn_clear.setToolTip("清空当前屏幕显示的波形和统计（不影响正在进行的录制）")
         self.btn_clear.clicked.connect(self.clear_display)
         lbl_win = QLabel("时间窗")
@@ -253,6 +264,7 @@ class MainWindow(QMainWindow):
 
         # ---- 底部：日志 ----
         self.txt_log = QPlainTextEdit()
+        self.txt_log.setObjectName("logPanel")
         self.txt_log.setReadOnly(True)
         self.txt_log.setMaximumHeight(110)
         root.addWidget(self.txt_log)
@@ -275,6 +287,7 @@ class MainWindow(QMainWindow):
         self.chk_f2 = QCheckBox("通道2 滤波")
         self.chk_f2.setChecked(True)
         self.btn_apply = QPushButton("应用设置（并开始数据流）")
+        self.btn_apply.setProperty("variant", "primary")
         self.btn_apply.clicked.connect(self.apply_settings)
         self.btn_stop_stream = QPushButton("暂停数据流")
         self.btn_stop_stream.clicked.connect(self.stop_stream)
@@ -293,11 +306,12 @@ class MainWindow(QMainWindow):
         g = QGroupBox("录制与分析")
         lay = QGridLayout(g)
         self.btn_record = QPushButton("● 开始录制")
+        self.btn_record.setProperty("variant", "danger")
         self.btn_record.clicked.connect(self.toggle_record)
-        self.btn_record.setStyleSheet(
-            "QPushButton{color:#b00; font-weight:bold;}")
         self.lbl_rec = QLabel("未在录制")
+        self.lbl_rec.setProperty("muted", True)
         self.btn_analyze_last = QPushButton("分析最近一次录制")
+        self.btn_analyze_last.setProperty("variant", "accent")
         self.btn_analyze_last.clicked.connect(self.analyze_last)
         self.btn_records = QPushButton("录制记录…")
         self.btn_records.clicked.connect(self.open_recordings)
@@ -394,15 +408,15 @@ class MainWindow(QMainWindow):
         self.cmb_device.setCurrentIndex(self.cmb_device.count() - 1)
 
     def on_link_state(self, state: str, msg: str) -> None:
-        colors = {ST_IDLE: "#888", ST_SCANNING: "#b80", ST_CONNECTING: "#b80",
-                  ST_CONNECTED: "#080", ST_DISCONNECTED: "#b00"}
+        colors = {ST_IDLE: QUIET, ST_SCANNING: WARNING, ST_CONNECTING: WARNING,
+                  ST_CONNECTED: SUCCESS, ST_DISCONNECTED: DANGER}
         dot = "●"
         names = {ST_IDLE: "未连接", ST_SCANNING: "扫描中", ST_CONNECTING: "连接中",
                  ST_CONNECTED: "已连接", ST_DISCONNECTED: "连接断开"}
         label = names.get(state, state)
         self.lbl_state.setText(f"{dot} {label}")
         self.lbl_state.setStyleSheet(
-            f"color:{colors.get(state, '#888')}; font-weight:bold;")
+            f"color:{colors.get(state, QUIET)}; font-weight:bold;")
         if msg:
             self.log(msg)
         connected = state == ST_CONNECTED
@@ -537,13 +551,13 @@ class MainWindow(QMainWindow):
             self.lbl_hr.setText(f"心率：{b['heart_rate']} bpm")
             if b["lead_off"]:
                 self.lbl_lead.setText("电极：脱落！")
-                self.lbl_lead.setStyleSheet("color:#b00; font-weight:bold;")
+                self.lbl_lead.setStyleSheet(f"color:{DANGER}; font-weight:bold;")
             elif self.serial_mode and self.ble._state != ST_CONNECTED:
                 self.lbl_lead.setText("电极：—（串口不提供）")
-                self.lbl_lead.setStyleSheet("color:#888;")
+                self.lbl_lead.setStyleSheet(f"color:{QUIET};")
             else:
                 self.lbl_lead.setText("电极：正常")
-                self.lbl_lead.setStyleSheet("color:#080;")
+                self.lbl_lead.setStyleSheet(f"color:{SUCCESS};")
         self.lbl_frames.setText(
             f"数据批次：{self.batch_count}（坏 {self.parser.frames_bad}）")
         if self.recorder.active:

@@ -14,6 +14,10 @@ from PySide6.QtWidgets import (
 )
 from core import recorder as rec
 from core.hrv import HrvResult, analyze
+from core.theme import (
+    ACCENT, DANGER, LINE, MARK_R, MUTED, RR_LINE, SUCCESS, WARNING,
+    mono_font, pathtag,
+)
 
 # 指标定义: (结果键, 显示名+单位, 含义)
 _METRIC_ROWS = [
@@ -63,6 +67,8 @@ class AnalysisWindow(QMainWindow):
     # ================================================================ 界面
 
     def _build_ui(self) -> None:
+        pg.setConfigOptions(antialias=False, background="#FFFFFF",
+                            foreground="#14171C")
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
@@ -70,6 +76,7 @@ class AnalysisWindow(QMainWindow):
         # ---- 左侧 2×2 图 ----
         left = QVBoxLayout()
         strip_bar = QHBoxLayout()
+        strip_bar.addWidget(pathtag("HRV / ANALYSIS"))
         strip_bar.addWidget(QLabel("心电片段:"))
         self.cmb_strip = QComboBox()
         self.cmb_strip.addItems(["开头 10 秒", "中间 10 秒", "结尾 10 秒", "全部波形"])
@@ -89,6 +96,10 @@ class AnalysisWindow(QMainWindow):
         self.plot_rr = pg.PlotWidget(title="心跳间隔曲线（RR间期）")
         self.plot_psd = pg.PlotWidget(title="心率变异频谱（功率谱密度）")
         self.plot_poin = pg.PlotWidget(title="Poincaré 散点图")
+        for p in (self.plot_ecg, self.plot_rr, self.plot_psd, self.plot_poin):
+            p.showGrid(x=True, y=True, alpha=0.18)
+            p.getAxis("bottom").setPen(LINE)
+            p.getAxis("left").setPen(LINE)
         grid.addWidget(self.plot_ecg, 0, 0)
         grid.addWidget(self.plot_rr, 0, 1)
         grid.addWidget(self.plot_psd, 1, 0)
@@ -101,7 +112,9 @@ class AnalysisWindow(QMainWindow):
         box = QGroupBox("分析指标")
         box_layout = QVBoxLayout(box)
         self.lbl_summary = QLabel("尚未分析")
+        self.lbl_summary.setProperty("muted", True)
         self.lbl_summary.setWordWrap(True)
+        self.lbl_summary.setFont(mono_font())
         self.table = QTableWidget(len(_METRIC_ROWS), 3)
         self.table.setHorizontalHeaderLabels(["指标", "数值", "含义"])
         self.table.verticalHeader().setVisible(False)
@@ -116,6 +129,7 @@ class AnalysisWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         self.btn_export = QPushButton("导出全部结果到录制文件夹")
+        self.btn_export.setProperty("variant", "primary")
         self.btn_export.clicked.connect(self.export_results)
         self.btn_export.setEnabled(False)
         btn_close = QPushButton("关闭")
@@ -189,11 +203,14 @@ class AnalysisWindow(QMainWindow):
             item_name = QTableWidgetItem(name)
             item_val = QTableWidgetItem(values.get(key, "") if not is_section else "")
             item_desc = QTableWidgetItem(desc)
+            item_desc.setForeground(QColor(MUTED))
             if is_section:
-                item_name.setForeground(QColor("#15539e"))
+                item_name.setForeground(QColor(ACCENT))
                 font = item_name.font()
                 font.setBold(True)
                 item_name.setFont(font)
+            else:
+                item_val.setFont(mono_font())
             item_val.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.table.setItem(row, 0, item_name)
             self.table.setItem(row, 1, item_val)
@@ -210,12 +227,12 @@ class AnalysisWindow(QMainWindow):
             return
         x = np.arange(len(r.ecg_clean)) / r.fs
         self.plot_ecg.plot(x, r.ecg_clean,
-                           pen=pg.mkPen("#1f77b4", width=1))
+                           pen=pg.mkPen(ACCENT, width=1))
         if len(r.r_peaks):
             self.plot_ecg.plot(
                 r.r_peaks / r.fs, r.ecg_clean[r.r_peaks],
                 pen=None, symbol="t", symbolSize=10,
-                symbolBrush="#d62728", symbolPen=None)
+                symbolBrush=MARK_R, symbolPen=None)
         self.plot_ecg.setLabel("bottom", "时间", units="s")
         self.plot_ecg.setLabel("left", "电压", units="V")
 
@@ -242,13 +259,13 @@ class AnalysisWindow(QMainWindow):
             return
         ok = r.rr_ok_mask
         self.plot_rr.plot(r.rr_times_s[ok], r.rr_ms[ok],
-                          pen=pg.mkPen("#1f77b4", width=1),
+                          pen=pg.mkPen(RR_LINE, width=1),
                           symbol="o", symbolSize=3,
-                          symbolBrush="#1f77b4", symbolPen=None)
+                          symbolBrush=RR_LINE, symbolPen=None)
         if (~ok).any():
             self.plot_rr.plot(r.rr_times_s[~ok], r.rr_ms[~ok],
                               pen=None, symbol="x", symbolSize=9,
-                              symbolBrush="#d62728", symbolPen="#d62728")
+                              symbolBrush=DANGER, symbolPen=DANGER)
         self.plot_rr.setLabel("bottom", "时间", units="s")
         self.plot_rr.setLabel("left", "RR间期", units="ms")
 
@@ -258,19 +275,19 @@ class AnalysisWindow(QMainWindow):
         if r is None or r.freq is None:
             text = pg.TextItem(
                 "数据不足2分钟，未计算频域指标\n（标准短时HRV分析建议录制5分钟）",
-                color="#b80", anchor=(0.5, 0.5))
+                color=WARNING, anchor=(0.5, 0.5))
             self.plot_psd.addItem(text)
             self.plot_psd.setXRange(0, 0.4)
             self.plot_psd.setYRange(0, 1)
             return
         freqs = r.freq["_freqs"]
         psd = r.freq["_psd"]
-        self.plot_psd.plot(freqs, psd, pen=pg.mkPen("#1f77b4", width=1),
-                           fillLevel=0, fillBrush=(31, 119, 180, 40))
-        for f0, f1, color, name in (
-            (0.003, 0.04, (150, 150, 150, 40), "VLF"),
-            (0.04, 0.15, (255, 127, 14, 50), "LF"),
-            (0.15, 0.40, (44, 160, 44, 50), "HF"),
+        self.plot_psd.plot(freqs, psd, pen=pg.mkPen(ACCENT, width=1),
+                           fillLevel=0, fillBrush=(36, 88, 211, 40))
+        for f0, f1, color in (
+            (0.003, 0.04, (146, 153, 164, 45)),
+            (0.04, 0.15, (185, 104, 25, 55)),
+            (0.15, 0.40, (22, 116, 81, 55)),
         ):
             region = pg.LinearRegionItem(
                 values=[f0, f1], movable=False, brush=color)
@@ -285,12 +302,12 @@ class AnalysisWindow(QMainWindow):
             return
         rr = r.kept_rr
         self.plot_poin.plot(rr[:-1], rr[1:], pen=None, symbol="o",
-                            symbolSize=4, symbolBrush=(31, 119, 180, 160),
+                            symbolSize=4, symbolBrush=(36, 88, 211, 170),
                             symbolPen=None)
         lo, hi = float(rr.min()), float(rr.max())
         pad = (hi - lo) * 0.1 + 1
         line = np.array([lo - pad, hi + pad])
-        self.plot_poin.plot(line, line, pen=pg.mkPen("#888", style=Qt.DashLine))
+        self.plot_poin.plot(line, line, pen=pg.mkPen(MUTED, style=Qt.DashLine))
         self.plot_poin.setLabel("bottom", "RR(n) ", units="ms")
         self.plot_poin.setLabel("left", "RR(n+1)", units="ms")
         self.plot_poin.setAspectLocked(True)

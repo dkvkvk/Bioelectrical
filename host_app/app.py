@@ -18,7 +18,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from core import paths
+from core import paths, theme
 from core.version import APP_NAME, __version__
 from ui.main_window import MainWindow
 
@@ -53,9 +53,7 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     app.setDesktopFileName("HeartHRV")
-    font = QFont("Microsoft YaHei UI")
-    font.setPointSize(9)
-    app.setFont(font)
+    theme.apply_theme(app)
     icon_path = paths.resource("app_icon.ico")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
