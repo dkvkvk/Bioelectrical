@@ -204,8 +204,8 @@ class MainWindow(QMainWindow):
         # ---- 中部：波形 + 右侧面板 ----
         mid = QHBoxLayout()
         pg.setConfigOptions(antialias=False)
-        self.plot1 = pg.PlotWidget(title="通道1 (V)")
-        self.plot2 = pg.PlotWidget(title="通道2 (V)")
+        self.plot1 = pg.PlotWidget(title="通道1（去直流显示）")
+        self.plot2 = pg.PlotWidget(title="通道2（去直流显示）")
         for p in (self.plot1, self.plot2):
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("bottom", "时间", units="s")
@@ -500,8 +500,11 @@ class MainWindow(QMainWindow):
     def refresh_plots(self) -> None:
         """显示规则：X轴固定为最新时间窗；Y轴按可见数据收紧跟随。
 
-        电极脱落/恢复等瞬态把幅度撑大时，波形恢复后 Y 轴会自动收回来，
-        始终贴着信号显示；暂停显示时不动视图，可用鼠标自由缩放细看。
+        显示时减去可见窗口的中位值（去直流）：设备滤波输出本身带直流
+        水平，原始值可能整体偏正/偏负，去直流后波形围绕0显示、形态直观。
+        只影响显示——录制保存的仍是原始数据，分析精度不受影响。
+        电极脱落/恢复等瞬态撑大幅度后，Y 轴会自动收紧回来；暂停显示时
+        不动视图，可用鼠标自由缩放细看。
         """
         if self.paused:
             return
@@ -514,10 +517,11 @@ class MainWindow(QMainWindow):
                 curve.setData([])
                 continue
             x = (gstart + np.arange(len(data))) / self.fs
-            curve.setData(x, data)
+            disp = data - float(np.median(data))
+            curve.setData(x, disp)
             p.setXRange(x[0], x[-1], padding=0)
-            ymin = float(data.min())
-            ymax = float(data.max())
+            ymin = float(disp.min())
+            ymax = float(disp.max())
             if ymin >= ymax:
                 pad = abs(ymin) * 0.1 + 1e-6
             else:
