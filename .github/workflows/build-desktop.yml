@@ -87,7 +87,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: HeartHRV-Windows-安装包-v${{ steps.ver.outputs.version }}
-          path: host_app/dist/*_v*.exe
+          path: host_app/dist/*.exe
           if-no-files-found: error
 
   build-macos:
