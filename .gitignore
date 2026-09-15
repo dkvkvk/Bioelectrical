@@ -92,3 +92,11 @@ JLinkLog.txt
 # AI assistant local files
 .zcode/
 .claude/settings.local.json
+
+# 厂家参考代码（Nordic nRF52 SDK，体积276MB，不入库；需要时从厂家获取）
+add/
+
+# 上位机运行数据与测试截图（本地运行产物，不入库）
+host_app/sessions/
+host_app/tests/e2e_shots/
+main.zip

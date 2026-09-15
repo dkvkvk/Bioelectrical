@@ -1,0 +1,205 @@
+name: 构建桌面安装包
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Windows 安装包
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 读取版本号
+        id: ver
+        shell: bash
+        run: |
+          v=$(python -c "import sys; sys.path.insert(0,'host_app'); from core.version import __version__ as x; print(x)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: 同步版本号到 exe 资源
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import re, sys
+          sys.path.insert(0, 'host_app')
+          from core.version import __version__ as v
+          p = 'host_app/packaging/version_info.txt'
+          s = open(p, encoding='utf-8').read()
+          vers = tuple(int(x) for x in v.split('.')[:3]) + (0,)
+          s = re.sub(r'filevers=\([^)]*\)', f'filevers={vers}', s)
+          s = re.sub(r'prodvers=\([^)]*\)', f'prodvers={vers}', s)
+          s = re.sub(r"StringStruct\('FileVersion', '[^']*'\)", f"StringStruct('FileVersion', '{v}')", s)
+          s = re.sub(r"StringStruct\('ProductVersion', '[^']*'\)", f"StringStruct('ProductVersion', '{v}')", s)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('version synced:', v)
+          EOF
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r host_app/requirements.txt pyinstaller
+
+      - name: PyInstaller 打包
+        working-directory: host_app
+        run: pyinstaller packaging/HeartHRV.spec --noconfirm
+
+      - name: 自检验证打包出的程序可运行
+        working-directory: host_app
+        shell: pwsh
+        env:
+          HEARTHRV_DATA_DIR: ${{ runner.temp }}\hearthrv_data
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          & ".\dist\HeartHRV\HeartHRV.exe" --selfcheck 8
+          Get-Content "$env:HEARTHRV_DATA_DIR\logs\selfcheck.txt"
+          if (-not (Select-String -Path "$env:HEARTHRV_DATA_DIR\logs\selfcheck.txt" -Pattern "^OK" -Quiet)) {
+            Write-Error "自检失败"; exit 1
+          }
+
+      - name: 安装 Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: 生成安装包
+        working-directory: host_app
+        run: ISCC /DMyVersion=${{ steps.ver.outputs.version }} packaging\installer.iss
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: HeartHRV-Windows-安装包-v${{ steps.ver.outputs.version }}
+          path: host_app/dist/*_v*.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: macOS
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 读取版本号
+        id: ver
+        run: |
+          v=$(python -c "import sys; sys.path.insert(0,'host_app'); from core.version import __version__ as x; print(x)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r host_app/requirements.txt pyinstaller
+
+      - name: PyInstaller 打包
+        working-directory: host_app
+        run: pyinstaller packaging/HeartHRV.spec --noconfirm
+
+      - name: 自检验证打包出的程序可运行
+        working-directory: host_app
+        env:
+          HEARTHRV_DATA_DIR: ${{ runner.temp }}/hearthrv_data
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ./dist/HeartHRV.app/Contents/MacOS/HeartHRV --selfcheck 8
+          cat "$HEARTHRV_DATA_DIR/logs/selfcheck.txt"
+          grep -q "^OK" "$HEARTHRV_DATA_DIR/logs/selfcheck.txt" || exit 1
+
+      - name: 压缩 .app
+        working-directory: host_app/dist
+        run: ditto -c -k --keepParent HeartHRV.app "HeartHRV-macOS-v${{ steps.ver.outputs.version }}.zip"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: HeartHRV-macOS-v${{ steps.ver.outputs.version }}
+          path: host_app/dist/HeartHRV-macOS-v*.zip
+          if-no-files-found: error
+
+  build-linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 读取版本号
+        id: ver
+        run: |
+          v=$(python -c "import sys; sys.path.insert(0,'host_app'); from core.version import __version__ as x; print(x)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 Qt 运行库
+        run: sudo apt-get update && sudo apt-get install -y libgl1 libegl1 libxkbcommon0
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r host_app/requirements.txt pyinstaller
+
+      - name: PyInstaller 打包
+        working-directory: host_app
+        run: pyinstaller packaging/HeartHRV.spec --noconfirm
+
+      - name: 自检验证打包出的程序可运行
+        working-directory: host_app
+        env:
+          HEARTHRV_DATA_DIR: ${{ runner.temp }}/hearthrv_data
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ./dist/HeartHRV/HeartHRV --selfcheck 8
+          cat "$HEARTHRV_DATA_DIR/logs/selfcheck.txt"
+          grep -q "^OK" "$HEARTHRV_DATA_DIR/logs/selfcheck.txt" || exit 1
+
+      - name: 打包 tar.gz
+        working-directory: host_app/dist
+        run: tar czf "HeartHRV-Linux-v${{ steps.ver.outputs.version }}.tar.gz" HeartHRV
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: HeartHRV-Linux-v${{ steps.ver.outputs.version }}
+          path: host_app/dist/HeartHRV-Linux-v*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: 发布 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出产物
+        run: find artifacts -type f
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.exe
+            artifacts/*.zip
+            artifacts/*.tar.gz
+          generate_release_notes: true

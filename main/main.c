@@ -458,6 +458,22 @@ static void host_cmd_received(const uint8_t *cmd, int len, bool from_uart)
 
     uint32_t sample_interval_us = cmd_sample_interval_us(cmd[2], from_uart);
 
+    // 上位机（尤其串口模式）会周期性重发相同设置命令作为保活。设置与
+    // 当前完全一致时直接忽略：避免每次保活都重置滤波器、重启采样定时器，
+    // 在心电数据上留下周期性毛刺（会干扰HRV分析）。volatile 变量先取快照再比。
+    uint8_t cur_ch1 = current_ch1_config;
+    uint8_t cur_ch2 = current_ch2_config;
+    uint32_t cur_interval = current_sample_interval_us;
+    if (cmd[0] == cur_ch1 &&
+        cmd[1] == cur_ch2 &&
+        (cmd[3] != 0x00) == (ch1_filter_enabled != 0) &&
+        (cmd[4] != 0x00) == (ch2_filter_enabled != 0) &&
+        (cmd[5] != 0x00) == (device_enabled != 0) &&
+        sample_interval_us == cur_interval) {
+        ESP_LOGI(TAG, "CMD identical to current config, skipped (keepalive)");
+        return;
+    }
+
     sample_control_t control = {
         .ch1_config = cmd[0],
         .ch2_config = cmd[1],
