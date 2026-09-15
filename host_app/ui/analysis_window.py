@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
-
 from core import recorder as rec
 from core.hrv import HrvResult, analyze
 
@@ -73,10 +72,15 @@ class AnalysisWindow(QMainWindow):
         strip_bar = QHBoxLayout()
         strip_bar.addWidget(QLabel("心电片段:"))
         self.cmb_strip = QComboBox()
-        self.cmb_strip.addItems(["开头 10 秒", "中间 10 秒", "结尾 10 秒"])
+        self.cmb_strip.addItems(["开头 10 秒", "中间 10 秒", "结尾 10 秒", "全部波形"])
         self.cmb_strip.setCurrentIndex(1)
         self.cmb_strip.currentIndexChanged.connect(self.draw_ecg_strip)
         strip_bar.addWidget(self.cmb_strip)
+        strip_bar.addWidget(QLabel("（鼠标拖动平移、滚轮缩放）"))
+        self.btn_reset_view = QPushButton("重置视图")
+        self.btn_reset_view.setToolTip("四张图都恢复到默认显示")
+        self.btn_reset_view.clicked.connect(self.reset_views)
+        strip_bar.addWidget(self.btn_reset_view)
         strip_bar.addStretch(1)
         left.addLayout(strip_bar)
 
@@ -199,25 +203,37 @@ class AnalysisWindow(QMainWindow):
     # ================================================================ 绘图
 
     def draw_ecg_strip(self) -> None:
+        """画全程心电 + R波标记；下拉框只是快速跳转视野，之后可自由拖动缩放。"""
         r = self.result
         self.plot_ecg.clear()
         if r is None or len(r.ecg_clean) == 0:
             return
         x = np.arange(len(r.ecg_clean)) / r.fs
-        pos = (0, 0.45, 0.9)[max(0, self.cmb_strip.currentIndex())]
-        center = int(pos * len(x))
-        half = int(5.0 * r.fs)
-        i0, i1 = max(0, center - half), min(len(x), center + half)
-        self.plot_ecg.plot(x[i0:i1], r.ecg_clean[i0:i1],
+        self.plot_ecg.plot(x, r.ecg_clean,
                            pen=pg.mkPen("#1f77b4", width=1))
-        m = (r.r_peaks >= i0) & (r.r_peaks < i1)
-        if m.any():
+        if len(r.r_peaks):
             self.plot_ecg.plot(
-                r.r_peaks[m] / r.fs, r.ecg_clean[r.r_peaks[m]],
+                r.r_peaks / r.fs, r.ecg_clean[r.r_peaks],
                 pen=None, symbol="t", symbolSize=10,
                 symbolBrush="#d62728", symbolPen=None)
         self.plot_ecg.setLabel("bottom", "时间", units="s")
         self.plot_ecg.setLabel("left", "电压", units="V")
+
+        choice = max(0, self.cmb_strip.currentIndex())
+        if choice == 3:  # 全部
+            self.plot_ecg.autoRange()
+            return
+        pos = (0.0, 0.45, 0.9)[choice]
+        center = int(pos * len(x))
+        self.plot_ecg.setXRange(max(0, x[center] - 5.0),
+                                min(x[-1], x[center] + 5.0), padding=0)
+        self.plot_ecg.enableAutoRange(y=True)
+
+    def reset_views(self) -> None:
+        """四张图全部恢复默认显示（心电图回到当前下拉框选的片段视野）。"""
+        self.draw_ecg_strip()
+        for p in (self.plot_rr, self.plot_psd, self.plot_poin):
+            p.autoRange()
 
     def draw_rr(self) -> None:
         r = self.result
