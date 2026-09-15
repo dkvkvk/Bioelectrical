@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BOARD": "my_esp32s3/esp32s3/procpu",
+        "Python3_EXECUTABLE": "/home/litmus/PHCodes/Env/zephyrproject/.venv/bin/python3",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "NO_BUILD_TYPE_WARNING": "ON"
+      },
+      "environment": {
+        "ZEPHYR_BASE": "/home/litmus/PHCodes/Env/zephyrproject/zephyr",
+        "ZEPHYR_SDK_INSTALL_DIR": "/home/litmus/PHCodes/Env/zephyr-sdk-1.0.1"
+      }
+    },
+    {
+      "name": "zephyr-debug",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/cmake-build-debug-zephyr",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "zephyr-release",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/cmake-build-release-zephyr",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "zephyr-debug-build", "configurePreset": "zephyr-debug" },
+    { "name": "zephyr-release-build", "configurePreset": "zephyr-release" }
+  ]
+}

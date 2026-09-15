@@ -1,0 +1,234 @@
+/*
+ * Copyright (c) 2024-2025 Espressif Systems (Shanghai) Co., Ltd.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/dts-v1/;
+
+#include <espressif/esp32s3/esp32s3_wroom_n8.dtsi>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/input/esp32-touch-sensor-input.h>
+#include <espressif/partitions_0x0_amp.dtsi>
+#include "my_esp32s3-pinctrl.dtsi"
+
+/ {
+	model = "Espressif ESP32S3-DevkitC PROCPU";
+	compatible = "espressif,esp32s3";
+
+	aliases {
+		i2c-0 = &i2c0;
+		watchdog0 = &wdt0;
+		uart-0 = &uart0;
+		sw0 = &button0;
+		led0 = &led0;
+		ks1092-cs = &ks1092_cs;
+		ks1092-reset = &ks1092_reset;
+	};
+
+	chosen {
+		zephyr,sram = &sram1;
+		/*
+		 * 日志输出走物理 UART0(GPIO43/44)，即板子的 UART 串口；
+		 * 与上位机数据透传共用同一口（原 ESP-IDF 版即如此）。
+		 * 注：诊断时插 UART 口即可看日志。
+		 */
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,bt-hci = &esp32_bt_hci;
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+
+		button0: button_0 {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT Button";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+	leds {
+		compatible = "gpio-leds";
+
+		led0: led_0 {
+			gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	/*
+	 * KS1092 生物电采集芯片的板级硬件定义。
+	 *   CS    = GPIO10（低电平有效，应用手动控制）
+	 *   RESET = GPIO14（高电平有效）
+	 */
+	ks1092_gpios {
+		compatible = "gpio-leds";
+
+		ks1092_cs: ks1092_cs_0 {
+			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+			label = "KS1092 CS";
+		};
+
+		ks1092_reset: ks1092_reset_0 {
+			gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+			label = "KS1092 RESET";
+		};
+	};
+
+	/*
+	 * 应用取用的 ADC 通道清单（SAR ADC1 = adc0）。
+	 *   idx0 = CH1 (GPIO1), idx1 = CH2 (GPIO2), idx2 = 电池 (GPIO3)
+	 */
+	zephyr,user {
+		io-channels = <&adc0 0>, <&adc0 1>, <&adc0 2>;
+	};
+};
+
+&usb_serial {
+	status = "disabled";
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&touch {
+	debounce-interval-ms = <30>;
+	href-microvolt = <2700000>;
+	lref-microvolt = <500000>;
+	href-atten-microvolt = <1000000>;
+	filter-mode = <ESP32_TOUCH_FILTER_MODE_IIR_16>;
+	filter-debounce-cnt = <1>;
+	filter-noise-thr = <ESP32_TOUCH_FILTER_NOISE_THR_4_8TH>;
+	filter-jitter-step = <4>;
+	filter-smooth-level = <ESP32_TOUCH_FILTER_SMOOTH_MODE_IIR_2>;
+};
+
+&i2c0 {
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
+
+&i2c1 {
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c1_default>;
+	pinctrl-names = "default";
+};
+
+&i2s0 {
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+};
+
+&i2s1 {
+	pinctrl-0 = <&i2s1_default>;
+	pinctrl-names = "default";
+};
+
+&spi2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+};
+
+&spi3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim3_default>;
+	pinctrl-names = "default";
+};
+
+&twai {
+	pinctrl-0 = <&twai_default>;
+	pinctrl-names = "default";
+};
+
+&timer0 {
+	status = "disabled";
+};
+
+&timer1 {
+	status = "disabled";
+};
+
+&timer2 {
+	status = "disabled";
+};
+
+&timer3 {
+	status = "disabled";
+};
+
+&wdt0 {
+	status = "okay";
+};
+
+&trng0 {
+	status = "okay";
+};
+
+&esp32_bt_hci {
+	status = "okay";
+};
+
+&wifi {
+	status = "okay";
+};
+
+/*
+ * SAR ADC1（adc0）三通道，增益（衰减）与 ESP-IDF 版一致：
+ *   ADC_ATTEN_DB_6  -> ADC_GAIN_1_2  （CH1/CH2 信号通道）
+ *   ADC_ATTEN_DB_12 -> ADC_GAIN_1_4  （电池通道）
+ */
+&adc0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1_2";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@1 {
+		reg = <1>;
+		zephyr,gain = "ADC_GAIN_1_2";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1_4";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+zephyr_udc0: &usb_otg {
+	status = "okay";
+};
+
+zephyr_uhc0: &usb_otg {
+	status = "okay";
+};
