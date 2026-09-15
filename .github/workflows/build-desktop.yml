@@ -74,7 +74,8 @@ jobs:
       - name: 安装 Inno Setup（官方6.7.3，版本固定保证与中文语言包匹配）
         shell: pwsh
         run: |
-          curl.exe -L -o inno.exe https://files.jrsoftware.org/is/6/innosetup-6.7.3.exe
+          curl.exe -L -o inno.exe https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+          if ((Get-Item .\inno.exe).Length -lt 1MB) { Write-Error "Inno安装包下载不完整"; exit 1 }
           Start-Process -FilePath ".\inno.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\inno" -Wait
           Add-Content $env:GITHUB_PATH "C:\inno"
 
