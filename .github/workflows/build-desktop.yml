@@ -50,7 +50,7 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install -r host_app/requirements.txt pyinstaller
+          pip install -r host_app/requirements.txt pyinstaller pillow
 
       - name: PyInstaller 打包
         working-directory: host_app
@@ -63,8 +63,10 @@ jobs:
           HEARTHRV_DATA_DIR: ${{ runner.temp }}\hearthrv_data
           QT_QPA_PLATFORM: offscreen
         run: |
-          & ".\dist\HeartHRV\HeartHRV.exe" --selfcheck 8
+          $p = Start-Process -FilePath ".\dist\HeartHRV\HeartHRV.exe" `
+              -ArgumentList "--selfcheck", "8" -Wait -PassThru
           Get-Content "$env:HEARTHRV_DATA_DIR\logs\selfcheck.txt"
+          if ($p.ExitCode -ne 0) { Write-Error "自检失败 exit=$($p.ExitCode)"; exit 1 }
           if (-not (Select-String -Path "$env:HEARTHRV_DATA_DIR\logs\selfcheck.txt" -Pattern "^OK" -Quiet)) {
             Write-Error "自检失败"; exit 1
           }
@@ -103,7 +105,7 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install -r host_app/requirements.txt pyinstaller
+          pip install -r host_app/requirements.txt pyinstaller pillow
 
       - name: PyInstaller 打包
         working-directory: host_app
@@ -153,7 +155,7 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install -r host_app/requirements.txt pyinstaller
+          pip install -r host_app/requirements.txt pyinstaller pillow
 
       - name: PyInstaller 打包
         working-directory: host_app
