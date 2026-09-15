@@ -71,8 +71,12 @@ jobs:
             Write-Error "自检失败"; exit 1
           }
 
-      - name: 安装 Inno Setup
-        run: choco install innosetup --no-progress -y
+      - name: 安装 Inno Setup（官方6.7.3，版本固定保证与中文语言包匹配）
+        shell: pwsh
+        run: |
+          curl.exe -L -o inno.exe https://files.jrsoftware.org/is/6/innosetup-6.7.3.exe
+          Start-Process -FilePath ".\inno.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=C:\inno" -Wait
+          Add-Content $env:GITHUB_PATH "C:\inno"
 
       - name: 生成安装包
         working-directory: host_app

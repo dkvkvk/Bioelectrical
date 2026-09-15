@@ -36,7 +36,8 @@ PrivilegesRequiredOverridesAllowed=dialog
 Uninstallable=yes
 
 [Languages]
-Name: "chs"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 中文语言包随仓库携带（packaging/ChineseSimplified.isl），不依赖安装环境
+Name: "chs"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
