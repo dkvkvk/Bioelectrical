@@ -18,7 +18,7 @@
 
 | 平台 | 产物 | 说明 |
 |---|---|---|
-| Windows | `心电HRV采集分析_安装包_vX.Y.Z.exe` | 双击安装的正式安装包（含许可协议页、快捷方式、卸载） |
+| Windows | `HeartHRV-Setup-vX.Y.Z.exe` | 双击安装的正式安装包（含许可协议页、快捷方式、卸载），安装向导为中文 |
 | macOS | `HeartHRV-macOS-vX.Y.Z.zip` | 解压得到 HeartHRV.app（未签名，首次打开需右键→打开） |
 | Linux | `HeartHRV-Linux-vX.Y.Z.tar.gz` | 解压后运行 `./HeartHRV/HeartHRV` |
 

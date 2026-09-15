@@ -25,7 +25,8 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 ; 许可协议页（安装向导第二步"我接受"）
 LicenseFile=EULA.txt
 OutputDir=..\dist
-OutputBaseFilename=心电HRV采集分析_安装包_v{#MyVersion}
+; 安装包文件名用英文（发布页/浏览器对中文文件名支持不稳），向导界面仍是全中文
+OutputBaseFilename=HeartHRV-Setup-v{#MyVersion}
 SetupIconFile=app_icon.ico
 Compression=lzma2/max
 SolidCompression=yes
