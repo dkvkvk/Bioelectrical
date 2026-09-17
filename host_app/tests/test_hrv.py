@@ -277,6 +277,72 @@ def test_analyze_new_fields():
     assert res.time["hr_min"] < res.time["hr_max"]
 
 
+# ================= 精度体检固化的回归测试（2026-09-17） =================
+
+def test_detection_robustness():
+    """检测器鲁棒性：不同采样率/心率范围/信号极性反转都要 ≥98%。"""
+    # 采样率
+    for fs in (250.0, 1000.0):
+        rr = make_rr_series(300, seed=42)
+        ecg, r_true = synthesize_ecg(rr, fs, seed=7)
+        peaks = detect_r_peaks(clean_ecg(ecg, fs), fs)
+        s = detection_scores(peaks, r_true, fs)
+        assert s["se"] >= 0.98 and s["ppv"] >= 0.98, (fs, s)
+    # 心率范围（45~160bpm 带变异）
+    for bpm in (45, 160):
+        base = 60000.0 / bpm
+        lf, hf = (4.0, 3.0) if base < 320 else (15.0, 10.0)
+        rr = make_rr_series(int(180 * bpm / 60), base_ms=base,
+                            lf_amp_ms=lf, hf_amp_ms=hf, seed=3)
+        ecg, r_true = synthesize_ecg(rr, FS, seed=7)
+        peaks = detect_r_peaks(clean_ecg(ecg, FS), FS)
+        s = detection_scores(peaks, r_true, FS)
+        assert s["se"] >= 0.98 and s["ppv"] >= 0.98, (bpm, s)
+    # 信号极性反转（R波向下）
+    rr = make_rr_series(300, seed=42)
+    ecg, r_true = synthesize_ecg(rr, FS, seed=7)
+    peaks = detect_r_peaks(clean_ecg(-ecg, FS), FS)
+    s = detection_scores(peaks, r_true, FS)
+    assert s["se"] >= 0.98, s
+
+
+def test_qrs_noise_stability():
+    """QRS定位抗噪：噪声×2时宽度稳定、宽QRS误报极少；标准条件零误报。"""
+    rr = make_rr_series(350, seed=42)
+    ecg, r_true = synthesize_ecg(rr, FS, seed=7)
+    _, _, w0, v0 = delineate_qrs(clean_ecg(ecg, FS), r_true, FS)
+    res0 = analyze(ecg, FS)
+    assert res0.qrs_stats["n_wide"] == 0, "正常QRS被误判为宽QRS"
+
+    ecg_noisy, _ = synthesize_ecg(rr, FS, seed=7, noise_v=0.016)
+    _, _, w, v = delineate_qrs(clean_ecg(ecg_noisy, FS), r_true, FS)
+    wv = w[v]
+    assert 40.0 <= wv.mean() <= 150.0, f"噪声下QRS宽度异常: {wv.mean():.1f}ms"
+    assert wv.std() < 25.0, f"噪声下QRS宽度波动过大: {wv.std():.1f}ms"
+    res = analyze(ecg_noisy, FS)
+    assert res.qrs_stats["n_wide"] <= 0.015 * res.qrs_stats["n_valid"], \
+        f"噪声下宽QRS误报过多: {res.qrs_stats['n_wide']}/{res.qrs_stats['n_valid']}"
+
+
+def test_filter_performance():
+    """滤波链：50Hz工频抑制≥20dB、0.3Hz漂移衰减≥80%、R波幅度保持85~115%。"""
+    t = np.arange(int(FS * 60)) / FS
+    tone = 0.004 * np.sin(2 * np.pi * 50.0 * t)
+    after = clean_ecg(tone, FS)
+    gain_db = 20 * np.log10(np.sqrt(np.mean(after ** 2)) / np.sqrt(np.mean(tone ** 2)))
+    assert gain_db <= -20.0, f"50Hz抑制不足: {gain_db:.1f}dB"
+    wander = 0.03 * np.sin(2 * np.pi * 0.3 * t)
+    after_w = clean_ecg(wander, FS)
+    atten = 1 - np.sqrt(np.mean(after_w ** 2)) / (0.03 / np.sqrt(2))
+    assert atten >= 0.80, f"基线漂移衰减不足: {atten*100:.0f}%"
+    rr = np.full(60, 850.0)
+    ecg, r_true = synthesize_ecg(rr, FS, r_amp_v=0.15, noise_v=0, mains_v=0, wander_v=0)
+    x = clean_ecg(ecg, FS)
+    amp0 = np.median(ecg[r_true])
+    amp1 = np.median(x[r_true] - np.median(x))
+    assert 0.85 <= amp1 / amp0 <= 1.15, f"R波幅度失真: {amp1/amp0*100:.1f}%"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

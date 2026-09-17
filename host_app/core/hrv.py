@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 from scipy.interpolate import CubicSpline
+from scipy.ndimage import uniform_filter1d
 from scipy.signal import butter, filtfilt, find_peaks, iirnotch, welch
 
 # 质量把关参数
@@ -173,9 +174,17 @@ def delineate_qrs(ecg, r_peaks, fs: float):
     """QRS 波群定位（课件第13页斜率法）：对每个 R 波向左找 Q 起点、
     向右找 S 终点，得到每一拍的 QRS 宽度。
 
-    判据：信号幅度回到基线带（偏离 < R 波幅度的 10%）且斜率降到 QRS
-    内最大斜率的 10% 以下，并连续保持约 8ms，即认为走出了 QRS。
-    Q/S 都是相对 R 的反方向偏离，用绝对偏离量判断，R 波倒置也能工作。
+    判据：信号偏离局部基线 < R 波幅度的 10%（或 < 3 倍实测噪声）且
+    斜率降到 QRS 内最大斜率的 10% 以下，并连续保持约 8ms，即认为走出
+    了 QRS。Q/S 都是相对 R 的反方向偏离，用绝对偏离量判断，R 波倒置
+    也能工作。
+
+    抗干扰设计：
+    - 局部基线用约300ms滑动均值（跟随残余基线漂移），避免漂移让
+      "回到基线"判据失效、宽度虚增；
+    - 噪声水平取每拍 R 波前 80~150ms 的安静段实测（MAD估计），
+      幅度/斜率阈值不低于 3 倍噪声，避免噪声随机打断平坦判据。
+    返回的仍是原信号上的样本索引。
 
     返回 (q_onset, s_off, qrs_ms, valid)，数组与 r_peaks 等长；
     定位失败的拍 q/s 为 -1、宽度为 NaN、valid 为 False。
@@ -190,32 +199,45 @@ def delineate_qrs(ecg, r_peaks, fs: float):
     if nb == 0 or n == 0:
         return q_on, s_off, qrs_ms, valid
 
-    d = np.abs(np.diff(x, prepend=x[:1]))
+    # 判据专用信号：轻度滑动平均（≈10ms）+ 局部基线（≈300ms滑动均值）
+    k = max(3, int(round(0.010 * fs)) | 1)  # 奇数长度
+    xs = np.convolve(x, np.ones(k) / k, mode="same")
+    w_win = max(3, int(round(0.30 * fs)) | 1)
+    base_line = uniform_filter1d(xs, size=w_win, mode="nearest")
+    dev = np.abs(xs - base_line)
+    d = np.abs(np.diff(xs, prepend=xs[:1]))
     persist = max(2, int(round(0.008 * fs)))  # 需连续平坦约 8ms 才算出了 QRS
 
-    for k, r in enumerate(peaks):
+    for r_i, r in enumerate(peaks):
         lo = max(0, r - int(0.15 * fs))
-        if k > 0:
-            lo = max(lo, int(peaks[k - 1]) + 1)
+        if r_i > 0:
+            lo = max(lo, int(peaks[r_i - 1]) + 1)
         hi = min(n - 1, r + int(0.30 * fs))
-        if k < nb - 1:
-            hi = min(hi, int(peaks[k + 1]) - 1)
+        if r_i < nb - 1:
+            hi = min(hi, int(peaks[r_i + 1]) - 1)
         if hi <= lo:
             continue
-        base = float(np.median(x[lo:hi + 1]))  # 搜索窗大部分是基线
-        r_amp = abs(float(x[r]) - base)
+        # 噪声水平：R 前方 80~150ms 安静段（P波之前、上一拍T波之后）
+        ref_lo = max(lo, r - int(0.15 * fs))
+        ref_hi = min(r - int(0.08 * fs), hi)
+        if ref_hi - ref_lo >= 2:
+            noise_d = 1.4826 * float(np.median(d[ref_lo:ref_hi]))
+            noise_amp = 1.4826 * float(np.median(dev[ref_lo:ref_hi]))
+        else:
+            noise_d = noise_amp = 0.0
+        r_amp = float(dev[r])  # R 相对局部基线的幅度
         core_lo, core_hi = max(0, r - int(0.09 * fs)), min(n - 1, r + int(0.10 * fs))
         if r_amp <= 0 or core_hi <= core_lo:
             continue
-        slope_thr = 0.10 * float(np.max(d[core_lo:core_hi + 1]))
-        amp_thr = 0.10 * r_amp
+        slope_thr = max(0.10 * float(np.max(d[core_lo:core_hi + 1])), 3.0 * noise_d)
+        amp_thr = max(0.10 * r_amp, 3.0 * noise_amp)
         if slope_thr <= 0:
             continue
 
         # Q 起点：从 R 向左，幅度和斜率同时低于阈值并保持 persist 个样本
         run, q = 0, -1
         for i in range(r - 1, lo - 1, -1):
-            if abs(x[i] - base) < amp_thr and d[i] < slope_thr:
+            if dev[i] < amp_thr and d[i] < slope_thr:
                 run += 1
                 if run >= persist:
                     q = i + persist - 1  # 平坦段最右侧 = QRS 起点
@@ -225,7 +247,7 @@ def delineate_qrs(ecg, r_peaks, fs: float):
         # S 终点：从 R 向右，同样判据
         run, s = 0, -1
         for i in range(r + 1, hi + 1):
-            if abs(x[i] - base) < amp_thr and d[i] < slope_thr:
+            if dev[i] < amp_thr and d[i] < slope_thr:
                 run += 1
                 if run >= persist:
                     s = i - persist + 1  # 平坦段最左侧 = QRS 终点
@@ -234,10 +256,29 @@ def delineate_qrs(ecg, r_peaks, fs: float):
                 run = 0
         if q < 0 or s < 0:
             continue
-        q_on[k], s_off[k] = q, s
-        qrs_ms[k] = (s - q + 1) / fs * 1000.0
-        valid[k] = True
+        q_on[r_i], s_off[r_i] = q, s
+        qrs_ms[r_i] = (s - q + 1) / fs * 1000.0
+        valid[r_i] = True
     return q_on, s_off, qrs_ms, valid
+
+
+def wide_qrs_mask(qrs_ms: np.ndarray, qrs_valid: np.ndarray,
+                  min_ms: float = QRS_WIDE_MS, outlier_ratio: float = 1.3) -> np.ndarray:
+    """稳健的"宽QRS"判定：宽度 >120ms 且满足其一——
+    ① 相对全体中位数明显偏宽（孤立异常拍，噪声导致的偶发超宽被排除）；
+    ② 全体中位数本身超 120ms（整段都是宽QRS的传导异常）。
+    """
+    w = np.asarray(qrs_ms, dtype=float)
+    out = np.zeros(len(w), dtype=bool)
+    vw = w[qrs_valid & ~np.isnan(w)]
+    if len(vw) == 0:
+        return out
+    med = float(np.median(vw))
+    if med > min_ms:
+        out[qrs_valid & (w > min_ms)] = True
+    else:
+        out[qrs_valid & (w > max(min_ms, outlier_ratio * med))] = True
+    return out
 
 
 # ---------------------------------------------------------------- 时域
@@ -581,7 +622,12 @@ def interpret(time_m: dict, freq_m: Optional[dict], nonlin_m: dict,
         if n_wide:
             f.append(("warn", f"发现 {n_wide} 次宽QRS（>120ms），可能是干扰或异位搏动，建议回看波形核对"))
         elif mean_ms:
-            f.append(("good", f"平均QRS宽度 {mean_ms:.0f}ms，在正常范围（80~120ms）"))
+            if mean_ms < 80.0:
+                f.append(("info", f"平均QRS宽度 {mean_ms:.0f}ms，偏窄（常见 80~120ms）"))
+            elif mean_ms > 120.0:
+                f.append(("warn", f"平均QRS宽度 {mean_ms:.0f}ms，超过正常上限（80~120ms）"))
+            else:
+                f.append(("good", f"平均QRS宽度 {mean_ms:.0f}ms，在正常范围（80~120ms）"))
     return f
 
 
@@ -606,6 +652,7 @@ class HrvResult:
     s_off: np.ndarray = field(default_factory=lambda: np.array([], dtype=int))
     qrs_ms: np.ndarray = field(default_factory=lambda: np.array([]))
     qrs_valid: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
+    qrs_wide: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
     qrs_stats: dict = field(default_factory=dict)    # mean_ms / n_wide / n_valid
     hr_series: dict = field(default_factory=dict)    # inst / m60 / m300 心率序列
     hr_spectral: Optional[float] = None              # 频谱峰值法心率（对照值）
@@ -665,9 +712,10 @@ def analyze(ecg, fs: float) -> HrvResult:
     # QRS 波群定位（对全部检出心跳做，与RR有效性无关）
     base.q_onset, base.s_off, base.qrs_ms, base.qrs_valid = delineate_qrs(x, peaks, fs)
     widths = base.qrs_ms[base.qrs_valid & ~np.isnan(base.qrs_ms)]
+    base.qrs_wide = wide_qrs_mask(base.qrs_ms, base.qrs_valid)
     base.qrs_stats = {
         "mean_ms": float(widths.mean()) if len(widths) else None,
-        "n_wide": int(np.sum(widths > QRS_WIDE_MS)),
+        "n_wide": int(base.qrs_wide.sum()),
         "n_valid": int(len(widths)),
     }
 

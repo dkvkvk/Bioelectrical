@@ -326,10 +326,7 @@ class AnalysisWindow(QMainWindow):
                            pen=pg.mkPen(ACCENT, width=1))
         peaks = r.r_peaks
         if len(peaks):
-            n_same = len(r.qrs_ms) == len(peaks)
-            wide = np.zeros(len(peaks), dtype=bool)
-            if n_same:
-                wide = r.qrs_valid & (r.qrs_ms > QRS_WIDE_MS)
+            wide = r.qrs_wide if len(r.qrs_wide) == len(peaks) else np.zeros(len(peaks), dtype=bool)
             normal = ~wide
             t_peaks = peaks / r.fs
             if normal.any():
@@ -531,8 +528,7 @@ class AnalysisWindow(QMainWindow):
                 q_v = f"{r.q_onset[i]/r.fs:.3f}" if i < len(r.q_onset) and r.q_onset[i] > 0 else "—"
                 s_v = f"{r.s_off[i]/r.fs:.3f}" if i < len(r.s_off) and r.s_off[i] > 0 else "—"
                 qrs_v = f"{r.qrs_ms[i]:.1f}" if i < len(r.qrs_ms) and r.qrs_ms[i] == r.qrs_ms[i] else "—"
-                wide_v = "是" if i < len(r.qrs_ms) and r.qrs_ms[i] == r.qrs_ms[i] \
-                    and r.qrs_valid[i] and r.qrs_ms[i] > QRS_WIDE_MS else "否"
+                wide_v = "是" if i < len(r.qrs_wide) and r.qrs_wide[i] else "否"
                 w.writerow([f"{rp/r.fs:.3f}", rr_v, ok_v, q_v, s_v, qrs_v, wide_v])
         saved.append(beats_path.name)
 
