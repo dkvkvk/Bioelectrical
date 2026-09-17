@@ -1,6 +1,0 @@
---c99 -c --cpu Cortex-M4.fp.sp -D__MICROLIB -g -O0 --apcs=interwork --split_sections -I ..\config --reduce_paths
--I.\RTE\_flash_s132_nrf52_7.2.0_softdevice
--IC:\Keil_v5_Packs\NordicSemiconductor\nRF_DeviceFamilyPack\8.44.1\Device\Include
--IC:\Keil_v5\ARM\CMSIS\Include
--D__UVISION_VERSION="536" -D_RTE_ -DNRF52832_XXAA -D_RTE_ -D__HEAP_SIZE="8192" -D__STACK_SIZE="8192"
--o ..\..\components\softdevice\s132\hex\ks1082.o --omf_browse ..\..\components\softdevice\s132\hex\ks1082.crf --depend ..\..\components\softdevice\s132\hex\ks1082.d "..\..\components\libraries\ks1082\ks1082.c"
