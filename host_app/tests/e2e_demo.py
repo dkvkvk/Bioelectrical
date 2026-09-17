@@ -73,7 +73,7 @@ def step():
             QMessageBox.information = staticmethod(lambda *a, **k: None)
             aw.export_results()
             folder = state["folder"]
-            expected = ["HRV指标.csv", "RR间期.csv"]
+            expected = ["HRV指标.csv", "逐拍明细.csv", "分析解读.txt"]
             missing = [n for n in expected if not (folder / n).exists()]
             if missing:
                 return fail("导出缺少文件: " + ",".join(missing))

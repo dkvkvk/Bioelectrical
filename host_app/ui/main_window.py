@@ -26,6 +26,7 @@ from core.theme import (
 )
 from core.version import APP_NAME, __version__
 from core import recorder as rec
+from core import hrv as hrv_engine
 from ui.analysis_window import AnalysisWindow
 from ui.recordings_window import RecordingsWindow
 
@@ -167,6 +168,10 @@ class MainWindow(QMainWindow):
         self._last_batch = None
 
         self.paused = False
+        # 电脑端R波逐拍心率（课件第9页）：None=不可用，回退设备算法心率
+        self._hr_host: float | None = None
+        self._hr_host_fail = 0
+        self._hr_tick = 0
         self._build_ui()
         self._set_connected_ui(False)
 
@@ -304,6 +309,12 @@ class MainWindow(QMainWindow):
         hr_unit.setProperty("muted", True)
         hrv.addWidget(self.lbl_hr_big)
         hrv.addWidget(hr_unit)
+        # 心率数据来源说明：电脑端R波法 / 设备算法（两者互为对照）
+        self.lbl_hr_src = QLabel("等待数据")
+        self.lbl_hr_src.setAlignment(Qt.AlignCenter)
+        self.lbl_hr_src.setProperty("muted", True)
+        self.lbl_hr_src.setStyleSheet("font-size:8pt;")
+        hrv.addWidget(self.lbl_hr_src)
         self.hr_panel.setVisible(False)  # 默认 KS1092（脑电）不显示
         side.addWidget(self.hr_panel)
         side.addWidget(self._build_record_group())
@@ -456,6 +467,8 @@ class MainWindow(QMainWindow):
         self.chk_f2.setVisible(dual)
         self.plot2.setVisible(dual)
         self.hr_panel.setVisible(line == "ks108x")
+        self._hr_host = None      # 非心电芯片不算R波心率
+        self._hr_host_fail = 0
         if not dual:
             self.log(f"芯片：{CHIPS[idx][0]}，已隐藏通道2设置与波形。")
 
@@ -680,11 +693,14 @@ class MainWindow(QMainWindow):
         self.parser.reset_stats()
         self.batch_count = 0
         self._last_batch = None
+        self._hr_host = None
+        self._hr_host_fail = 0
         self.curve1.setData([])
         self.curve2.setData([])
         self.lbl_battery.setText("电量：—")
         self.lbl_hr.setText("心率：—")
         self.lbl_hr_big.setText("—")
+        self.lbl_hr_src.setText("等待数据")
         self.lbl_lead.setText("电极：—")
         self.lbl_frames.setText("数据批次：0（坏 0）")
         if self.recorder.active:
@@ -748,8 +764,17 @@ class MainWindow(QMainWindow):
             batt = b["battery"]
             self.lbl_battery.setText(
                 f"电量：{batt}%" if batt is not None else "电量：—")
-            self.lbl_hr.setText(f"心率：{b['heart_rate']} bpm")
-            self.lbl_hr_big.setText(str(b["heart_rate"]))
+            # 大字心率优先用电脑端R波逐拍法（更准），设备算法作对照
+            host = self._hr_host
+            dev = b["heart_rate"]
+            if host is not None:
+                self.lbl_hr_big.setText(f"{host:.0f}")
+                self.lbl_hr.setText(f"心率：{host:.0f} bpm（R波法）")
+                self.lbl_hr_src.setText(f"R波逐拍法 · 设备算法 {dev}")
+            else:
+                self.lbl_hr_big.setText(str(dev))
+                self.lbl_hr.setText(f"心率：{dev} bpm")
+                self.lbl_hr_src.setText("设备算法")
             if b["lead_off"]:
                 self.lbl_lead.setText("电极：脱落！")
                 self.lbl_lead.setStyleSheet(f"color:{DANGER}; font-weight:bold;")
@@ -765,6 +790,41 @@ class MainWindow(QMainWindow):
             self.lbl_rec.setText(
                 f"录制中 {self._fmt(self.recorder.elapsed_s())}"
                 f"（{self.recorder.sample_count()} 点）")
+        # 电脑端R波心率每2秒重算一次（45秒数据实测约几毫秒，不卡界面）
+        self._hr_tick += 1
+        if self._hr_tick % 4 == 0:
+            self._update_live_hr()
+
+    def _update_live_hr(self) -> None:
+        """电脑端实时心率（课件第9页逐拍间期法，临床金标准思路）：
+        在最近45秒数据上找R波，取最近约12个RR间期的中位数折算心率。
+
+        只在心电芯片（KS108x）且有足够数据时计算；连续3次找不到R波
+        则放弃，界面回退显示设备算法心率。检测失败/暂停数据流时保留
+        上次结果一段时间。
+        """
+        if self._chip_line() != "ks108x":
+            self._hr_host = None
+            return
+        need = int(self.fs * 30)
+        if self.ring1.count < need:
+            return
+        try:
+            _, seg = self.ring1.tail(int(self.fs * 45))
+            x = hrv_engine.clean_ecg(seg, self.fs)
+            peaks = hrv_engine.detect_r_peaks(x, self.fs)
+            if len(peaks) < 4:
+                self._hr_host_fail += 1
+                if self._hr_host_fail >= 3:
+                    self._hr_host = None
+                return
+            self._hr_host_fail = 0
+            rr_ms = np.diff(peaks) / self.fs * 1000.0
+            med = float(np.median(rr_ms[-12:]))
+            if 300.0 <= med <= 2000.0:
+                self._hr_host = 60000.0 / med
+        except Exception:  # noqa: BLE001 实时显示失败不影响主流程
+            pass
 
     @staticmethod
     def _fmt(sec: float) -> str:
