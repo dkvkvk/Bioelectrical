@@ -29,19 +29,28 @@ from core import recorder as rec
 from ui.analysis_window import AnalysisWindow
 from ui.recordings_window import RecordingsWindow
 
-# 增益档位（显示名, CH1SET, CH2SET），与协议文档一致
-GAINS = [
-    ("360x（默认）", 0x20, 0x00),
-    ("540x", 0x30, 0x10),
-    ("680x", 0x22, 0x02),
-    ("720x", 0x34, 0x14),
-    ("1020x", 0x32, 0x12),
-    ("1080x", 0x38, 0x18),
-    ("1360x", 0x36, 0x16),
-    ("1440x", 0x3C, 0x1C),
-    ("2040x", 0x3A, 0x1A),
-    ("2720x", 0x3E, 0x1E),
+# 两级增益（与芯片官方评估软件一致）：第一级 × 第二级 = 总放大倍数。
+# 寄存器值与协议文档一致：KS108X/KS109X 家族共用同一套 CH1SET/CH2SET 编码。
+STAGE1_GAINS = [9, 17]                    # 第一级增益（倍）
+STAGE2_GAINS = [40, 60, 80, 120, 160]     # 第二级增益（倍）
+# (第一级, 第二级) -> 寄存器值
+CH1_SET_REG = {
+    (9, 40): 0x20, (9, 60): 0x30, (9, 80): 0x34, (9, 120): 0x38, (9, 160): 0x3C,
+    (17, 40): 0x22, (17, 60): 0x32, (17, 80): 0x36, (17, 120): 0x3A, (17, 160): 0x3E,
+}
+CH2_SET_REG = {
+    (9, 40): 0x00, (9, 60): 0x10, (9, 80): 0x14, (9, 120): 0x18, (9, 160): 0x1C,
+    (17, 40): 0x02, (17, 60): 0x12, (17, 80): 0x16, (17, 120): 0x1A, (17, 160): 0x1E,
+}
+# 芯片型号（显示名, 是否双通道）。x1=单通道, x2=双通道；单通道时隐藏通道2。
+# 当前设备焊的是 KS1092。
+CHIPS = [
+    ("KS1081", False),
+    ("KS1082", True),
+    ("KS1091", False),
+    ("KS1092", True),
 ]
+DEFAULT_CHIP_INDEX = 3
 # 采样率（显示名, SR 字节, 实际Hz）
 SAMPLE_RATES = [
     ("250 Hz", 0x04, 250.0),
@@ -285,36 +294,116 @@ class MainWindow(QMainWindow):
 
     def _build_control_group(self) -> QGroupBox:
         g = QGroupBox("设备设置")
-        lay = QGridLayout(g)
-        lay.setHorizontalSpacing(8)
-        lay.setVerticalSpacing(6)
+        lay = QVBoxLayout(g)
+        lay.setSpacing(6)
 
-        self.cmb_gain = QComboBox()
-        for name, _, _ in GAINS:
-            self.cmb_gain.addItem(name)
+        def row() -> QWidget:
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+            return w
+
+        # ---- 芯片型号 ----
+        self.cmb_chip = QComboBox()
+        for name, _ in CHIPS:
+            self.cmb_chip.addItem(name)
+        self.cmb_chip.setCurrentIndex(DEFAULT_CHIP_INDEX)
+        r = row()
+        r.layout().addWidget(QLabel("芯片"))
+        r.layout().addWidget(self.cmb_chip, stretch=1)
+        lay.addWidget(r)
+
+        # ---- 每通道独立的两级增益 ----
+        self.row_gain1 = self._build_gain_row(1)
+        self.row_gain2 = self._build_gain_row(2)
+        lay.addWidget(self.row_gain1)
+        lay.addWidget(self.row_gain2)
+        self._gain_combos = [self.cmb_g1a, self.cmb_g1b, self.cmb_g2a, self.cmb_g2b]
+
+        # ---- 采样率 ----
         self.cmb_sr = QComboBox()
         for name, _, _ in SAMPLE_RATES:
             self.cmb_sr.addItem(name)
         self.cmb_sr.setCurrentIndex(1)
+        r = row()
+        r.layout().addWidget(QLabel("采样率"))
+        r.layout().addWidget(self.cmb_sr, stretch=1)
+        lay.addWidget(r)
+
+        # ---- 每通道滤波开关 ----
+        r = row()
         self.chk_f1 = QCheckBox("通道1 滤波")
         self.chk_f1.setChecked(True)
         self.chk_f2 = QCheckBox("通道2 滤波")
         self.chk_f2.setChecked(True)
+        r.layout().addWidget(self.chk_f1)
+        r.layout().addWidget(self.chk_f2)
+        r.layout().addStretch(1)
+        lay.addWidget(r)
+
         self.btn_apply = QPushButton("应用设置（并开始数据流）")
         self.btn_apply.setProperty("variant", "primary")
         self.btn_apply.clicked.connect(self.apply_settings)
         self.btn_stop_stream = QPushButton("暂停数据流")
         self.btn_stop_stream.clicked.connect(self.stop_stream)
-
-        lay.addWidget(QLabel("增益"), 0, 0)
-        lay.addWidget(self.cmb_gain, 0, 1)
-        lay.addWidget(QLabel("采样率"), 1, 0)
-        lay.addWidget(self.cmb_sr, 1, 1)
-        lay.addWidget(self.chk_f1, 2, 0, 1, 2)
-        lay.addWidget(self.chk_f2, 3, 0, 1, 2)
-        lay.addWidget(self.btn_apply, 4, 0, 1, 2)
-        lay.addWidget(self.btn_stop_stream, 5, 0, 1, 2)
+        lay.addWidget(self.btn_apply)
+        lay.addWidget(self.btn_stop_stream)
+        self._update_gain_labels()
+        self.cmb_chip.currentIndexChanged.connect(self._on_chip_changed)
         return g
+
+    def _build_gain_row(self, ch: int) -> QWidget:
+        """一个通道的两级增益选择行：第一级 × 第二级 = 总倍数。"""
+        w = QWidget()
+        w.setObjectName(f"gainRow{ch}")
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        h.addWidget(QLabel(f"通道{ch}增益"))
+        cmb_a = QComboBox()
+        cmb_a.setMinimumWidth(56)
+        for v in STAGE1_GAINS:
+            cmb_a.addItem(f"{v}x")
+        cmb_b = QComboBox()
+        cmb_b.setMinimumWidth(64)
+        for v in STAGE2_GAINS:
+            cmb_b.addItem(f"{v}x")
+        total = QLabel()
+        total.setProperty("muted", True)
+        if ch == 1:
+            self.cmb_g1a, self.cmb_g1b, self.lbl_g1 = cmb_a, cmb_b, total
+        else:
+            self.cmb_g2a, self.cmb_g2b, self.lbl_g2 = cmb_a, cmb_b, total
+        cmb_a.currentIndexChanged.connect(lambda _: self._update_gain_labels())
+        cmb_b.currentIndexChanged.connect(lambda _: self._update_gain_labels())
+        h.addWidget(cmb_a)
+        h.addWidget(QLabel("×"))
+        h.addWidget(cmb_b)
+        h.addWidget(total, stretch=1)
+        return w
+
+    def _update_gain_labels(self) -> None:
+        s1a, s1b, s2a, s2b, _, _ = self._gain_regs()
+        self.lbl_g1.setText(f"= {s1a * s1b}x")
+        self.lbl_g2.setText(f"= {s2a * s2b}x")
+
+    def _gain_regs(self):
+        """返回 (通道1第一级, 通道1第二级, 通道2第一级, 通道2第二级, CH1SET, CH2SET)。"""
+        s1a = STAGE1_GAINS[max(0, self.cmb_g1a.currentIndex())]
+        s1b = STAGE2_GAINS[max(0, self.cmb_g1b.currentIndex())]
+        s2a = STAGE1_GAINS[max(0, self.cmb_g2a.currentIndex())]
+        s2b = STAGE2_GAINS[max(0, self.cmb_g2b.currentIndex())]
+        return s1a, s1b, s2a, s2b, CH1_SET_REG[(s1a, s1b)], CH2_SET_REG[(s2a, s2b)]
+
+    def _on_chip_changed(self, idx: int) -> None:
+        """单通道芯片隐藏通道2的设置与波形（官方评估软件行为一致）。"""
+        dual = CHIPS[idx][1]
+        self.row_gain2.setVisible(dual)
+        self.chk_f2.setVisible(dual)
+        self.plot2.setVisible(dual)
+        if not dual:
+            self.log(f"芯片：{CHIPS[idx][0]}，已隐藏通道2设置与波形。")
 
     def _build_record_group(self) -> QGroupBox:
         g = QGroupBox("录制与分析")
@@ -487,8 +576,7 @@ class MainWindow(QMainWindow):
         if self.generator is not None:
             self.log("内部信号源运行中，设置不会发给真实设备。")
             return
-        gi = self.cmb_gain.currentIndex()
-        name_g, ch1set, ch2set = GAINS[max(0, gi)]
+        s1a, s1b, s2a, s2b, ch1set, ch2set = self._gain_regs()
         si = self.cmb_sr.currentIndex()
         name_sr, sr_code, fs = SAMPLE_RATES[max(0, si)]
         f1 = 1 if self.chk_f1.isChecked() else 0
@@ -504,7 +592,9 @@ class MainWindow(QMainWindow):
             self.log(f"采样率从 {old_fs:.0f}Hz 切到 {fs:.0f}Hz，波形已重新开始。")
 
         self._settings_snapshot = {
-            "gain": name_g, "ch1set": f"0x{ch1set:02X}",
+            "chip": CHIPS[max(0, self.cmb_chip.currentIndex())][0],
+            "gain": f"通道1 {s1a * s1b}x / 通道2 {s2a * s2b}x",
+            "ch1set": f"0x{ch1set:02X}",
             "ch2set": f"0x{ch2set:02X}", "sample_rate": f"{fs:.0f}Hz",
             "filter_ch1": bool(f1), "filter_ch2": bool(f2),
         }
@@ -513,8 +603,7 @@ class MainWindow(QMainWindow):
     def stop_stream(self) -> None:
         if self.generator is not None:
             return
-        gi = max(0, self.cmb_gain.currentIndex())
-        _, ch1set, ch2set = GAINS[gi]
+        _, _, _, _, ch1set, ch2set = self._gain_regs()
         si = max(0, self.cmb_sr.currentIndex())
         _, sr_code, _ = SAMPLE_RATES[si]
         if self._send_device_command(
@@ -637,7 +726,9 @@ class MainWindow(QMainWindow):
             self.btn_record.setText("● 开始录制")
             self.lbl_rec.setText(
                 f"已保存（{folder.name if folder else '未录制'}）")
-            self.cmb_gain.setEnabled(True)
+            for c in self._gain_combos:
+                c.setEnabled(True)
+            self.cmb_chip.setEnabled(True)
             self.cmb_sr.setEnabled(True)
             self.btn_analyze_last.setEnabled(True)
             return
@@ -647,8 +738,15 @@ class MainWindow(QMainWindow):
                 self, "无法录制",
                 "还没有数据来源：请先连接设备（蓝牙或串口）。")
             return
+        _, _, _, _, ch1set, ch2set = self._gain_regs()
         settings = getattr(self, "_settings_snapshot", None) or {
-            "gain": GAINS[max(0, self.cmb_gain.currentIndex())][0],
+            "chip": CHIPS[max(0, self.cmb_chip.currentIndex())][0],
+            "gain": "通道1 {}x / 通道2 {}x".format(
+                STAGE1_GAINS[max(0, self.cmb_g1a.currentIndex())]
+                * STAGE2_GAINS[max(0, self.cmb_g1b.currentIndex())],
+                STAGE1_GAINS[max(0, self.cmb_g2a.currentIndex())]
+                * STAGE2_GAINS[max(0, self.cmb_g2b.currentIndex())]),
+            "ch1set": f"0x{ch1set:02X}", "ch2set": f"0x{ch2set:02X}",
             "sample_rate": f"{self.fs:.0f}Hz",
             "filter_ch1": self.chk_f1.isChecked(),
             "filter_ch2": self.chk_f2.isChecked(),
@@ -660,7 +758,9 @@ class MainWindow(QMainWindow):
             settings=settings)
         self.btn_record.setText("■ 停止录制")
         self.lbl_rec.setText("录制中 00:00")
-        self.cmb_gain.setEnabled(False)
+        for c in self._gain_combos:
+            c.setEnabled(False)
+        self.cmb_chip.setEnabled(False)
         self.cmb_sr.setEnabled(False)
         self.btn_analyze_last.setEnabled(False)
         self.log(f"开始录制（保存到 {folder.name}）。建议安静录制 3~5 分钟再做HRV分析。")

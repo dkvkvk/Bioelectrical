@@ -8,7 +8,7 @@
 """
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QLabel
 
 # ---- 主题令牌（与前端规范一致，禁止在界面代码里另配色）----
@@ -133,9 +133,20 @@ QComboBox:disabled {{ color: {QUIET}; background: {SURFACE_SUBTLE}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
     background: {SURFACE};
+    color: {INK};
     border: 1px solid {LINE};
     selection-background-color: {ACCENT_SOFT};
     selection-color: {INK};
+    outline: none;
+}}
+QComboBox QAbstractItemView::item {{
+    color: {INK};
+    background: transparent;
+    padding: 4px 8px;
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background: {ACCENT_SOFT};
+    color: {INK};
 }}
 QCheckBox {{ spacing: 6px; color: {INK}; }}
 QPlainTextEdit {{
@@ -191,7 +202,34 @@ def apply_theme(app) -> None:
     font = QFont(FONT_UI)
     font.setPointSize(9)
     app.setFont(font)
+    app.setPalette(_light_palette())
     app.setStyleSheet(QSS)
+
+
+def _light_palette() -> QPalette:
+    """显式构造浅色调色板。
+
+    Windows 处于深色模式时，Qt6 会按系统给应用一套“深底白字”的调色板；
+    QSS 只把背景刷成白色而没写死文字颜色的控件（下拉框弹窗选项、右键
+    菜单、气泡提示等）就会白字落在白底上“消失”。整套浅色板从根上屏蔽。
+    """
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor(SURFACE_SUBTLE))
+    pal.setColor(QPalette.WindowText, QColor(INK))
+    pal.setColor(QPalette.Base, QColor(SURFACE))
+    pal.setColor(QPalette.AlternateBase, QColor(SURFACE_SUBTLE))
+    pal.setColor(QPalette.Text, QColor(INK))
+    pal.setColor(QPalette.Button, QColor(SURFACE))
+    pal.setColor(QPalette.ButtonText, QColor(INK))
+    pal.setColor(QPalette.ToolTipBase, QColor(SURFACE))
+    pal.setColor(QPalette.ToolTipText, QColor(INK))
+    pal.setColor(QPalette.Highlight, QColor(ACCENT))
+    pal.setColor(QPalette.HighlightedText, QColor(SURFACE))
+    pal.setColor(QPalette.PlaceholderText, QColor(QUIET))
+    pal.setColor(QPalette.Disabled, QPalette.Text, QColor(QUIET))
+    pal.setColor(QPalette.Disabled, QPalette.WindowText, QColor(QUIET))
+    pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(QUIET))
+    return pal
 
 
 def mono_font(point_size: int = 9) -> QFont:
