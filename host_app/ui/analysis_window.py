@@ -224,7 +224,11 @@ class AnalysisWindow(QMainWindow):
     # ================================================================ 绘图
 
     def draw_ecg_strip(self) -> None:
-        """画全程心电 + R波标记；下拉框只是快速跳转视野，之后可自由拖动缩放。"""
+        """画全程心电 + R波标记；下拉框只是快速跳转视野，之后可自由拖动缩放。
+
+        视野范围全部显式计算后设定（不用 autoRange/enableAutoRange——
+        与手工 setXRange 混用时偶发刻度不刷新，时间数字会消失）。
+        """
         r = self.result
         self.plot_ecg.clear()
         if r is None or len(r.ecg_clean) == 0:
@@ -241,14 +245,22 @@ class AnalysisWindow(QMainWindow):
         self.plot_ecg.setLabel("left", "电压", units="V")
 
         choice = max(0, self.cmb_strip.currentIndex())
+        dur = float(x[-1])
         if choice == 3:  # 全部
-            self.plot_ecg.autoRange()
+            x0, x1 = 0.0, dur
+        else:
+            pos = (0.0, 0.45, 0.9)[choice]
+            center = pos * dur
+            x0, x1 = max(0.0, center - 5.0), min(dur, center + 5.0)
+        i0 = max(0, int(x0 * r.fs))
+        i1 = min(len(r.ecg_clean), int(x1 * r.fs) + 1)
+        seg = r.ecg_clean[i0:i1]
+        if len(seg) == 0:
             return
-        pos = (0.0, 0.45, 0.9)[choice]
-        center = int(pos * len(x))
-        self.plot_ecg.setXRange(max(0, x[center] - 5.0),
-                                min(x[-1], x[center] + 5.0), padding=0)
-        self.plot_ecg.enableAutoRange(y=True)
+        ymin, ymax = float(seg.min()), float(seg.max())
+        pad = (ymax - ymin) * 0.1 or 1e-4
+        self.plot_ecg.setXRange(x0, x1, padding=0)
+        self.plot_ecg.setYRange(ymin - pad, ymax + pad, padding=0)
 
     def reset_views(self) -> None:
         """四张图全部恢复默认显示（心电图回到当前下拉框选的片段视野）。"""

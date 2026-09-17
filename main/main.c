@@ -629,59 +629,88 @@ static void sample_task(void *arg)
 
         sample_control_t control = {0};
         if (xQueueReceive(s_control_queue, &control, 0) == pdTRUE) {
-            portENTER_CRITICAL(&s_tick_gate);
-            s_tick_delivery_enabled = false;
-            portEXIT_CRITICAL(&s_tick_gate);
+            /* 按需选择性应用：
+             * - 未变化的通道不动它的滤波状态（波形不抖）；
+             * - 采样率未变就不重启定时器（不产生采样断点，本tick继续采样）；
+             * - 增益未变就不重写SPI寄存器；
+             * - 与当前配置完全一致的命令已在 host_cmd_received 拦截，不会到达这里。 */
+            bool rate_changed = (control.sample_interval_us != current_sample_interval_us);
+            bool ch1_gain_changed = (control.ch1_config != current_ch1_config);
+            bool ch2_gain_changed = (control.ch2_config != current_ch2_config);
+            bool ch1_changed = ch1_gain_changed || (control.ch1_filter != ch1_filter_enabled);
+            bool ch2_changed = ch2_gain_changed || (control.ch2_filter != ch2_filter_enabled);
+            bool any_filter_reset = rate_changed || ch1_changed || ch2_changed;
 
-            esp_err_t stop_err = esp_timer_stop(s_sample_timer);
-            if (stop_err != ESP_OK && stop_err != ESP_ERR_INVALID_STATE) {
-                ESP_LOGE(TAG, "Failed to stop sample timer: %s", esp_err_to_name(stop_err));
+            if (rate_changed) {
+                portENTER_CRITICAL(&s_tick_gate);
+                s_tick_delivery_enabled = false;
+                portEXIT_CRITICAL(&s_tick_gate);
+
+                esp_err_t stop_err = esp_timer_stop(s_sample_timer);
+                if (stop_err != ESP_OK && stop_err != ESP_ERR_INVALID_STATE) {
+                    ESP_LOGE(TAG, "Failed to stop sample timer: %s", esp_err_to_name(stop_err));
+                }
+                ulTaskNotifyTake(pdTRUE, 0);
             }
-            ulTaskNotifyTake(pdTRUE, 0);
 
-            ks1092_write_channel_regs(control.ch1_config, control.ch2_config);
+            if (ch1_gain_changed || ch2_gain_changed) {
+                ks1092_write_channel_regs(control.ch1_config, control.ch2_config);
+            }
             current_ch1_config = control.ch1_config;
             current_ch2_config = control.ch2_config;
-            current_sample_interval_us = control.sample_interval_us;
             ch1_filter_enabled = control.ch1_filter;
             ch2_filter_enabled = control.ch2_filter;
             device_enabled = control.enabled;
 
-            iir_filter_set_sample_rate(current_sample_interval_us);
-            ksfilter_set_sample_rate(current_sample_interval_us);
-            heart_rate_set_sample_rate(current_sample_interval_us);
-            iir_filter_reset();
-            iir1_filter_reset();
-            ksfilter_reset();
-            ksfilter1_reset();
-            lvbo_reset();
-            s_filter_generation++;
+            if (rate_changed) {
+                current_sample_interval_us = control.sample_interval_us;
+                iir_filter_set_sample_rate(current_sample_interval_us);
+                ksfilter_set_sample_rate(current_sample_interval_us);
+                heart_rate_set_sample_rate(current_sample_interval_us);
+            }
+            if (ch1_changed || rate_changed) {
+                /* 通道1相关：心率和脱落检测都基于通道1 */
+                iir_filter_reset();
+                ksfilter_reset();
+                lvbo_reset();
+                smooth_primed1 = false;
+                memset(avg_rate_list, 0, sizeof(avg_rate_list));
+                memset(lo_buf, 0, sizeof(lo_buf));
+                avg_rate = 0;
+                count_HR = 0;
+                lo_idx = 0;
+                lo_count = 0;
+            }
+            if (ch2_changed || rate_changed) {
+                iir1_filter_reset();
+                ksfilter1_reset();
+                smooth_primed2 = false;
+            }
+            if (any_filter_reset) {
+                s_filter_generation++;
+                last_sample_us = 0;
+                xQueueReset(s_transport_queue);
+            }
 
-            smooth_primed1 = false;
-            smooth_primed2 = false;
-            memset(avg_rate_list, 0, sizeof(avg_rate_list));
-            memset(lo_buf, 0, sizeof(lo_buf));
-            avg_rate = 0;
-            count_HR = 0;
-            lo_idx = 0;
-            lo_count = 0;
-            last_sample_us = 0;
-            xQueueReset(s_transport_queue);
-
-            ESP_ERROR_CHECK(esp_timer_start_periodic(s_sample_timer,
-                                                     current_sample_interval_us));
-            portENTER_CRITICAL(&s_tick_gate);
-            s_tick_delivery_enabled = true;
-            portEXIT_CRITICAL(&s_tick_gate);
+            if (rate_changed) {
+                ESP_ERROR_CHECK(esp_timer_start_periodic(s_sample_timer,
+                                                         current_sample_interval_us));
+                portENTER_CRITICAL(&s_tick_gate);
+                s_tick_delivery_enabled = true;
+                portEXIT_CRITICAL(&s_tick_gate);
+                ESP_LOGI(TAG,
+                         "CMD applied (rate %.0fHz): filter1=%s filter2=%s device=%s",
+                         1000000.0 / current_sample_interval_us,
+                         on_off_str(ch1_filter_enabled != 0),
+                         on_off_str(ch2_filter_enabled != 0),
+                         on_off_str(device_enabled));
+                continue; /* 等新定时器的第一个tick */
+            }
             ESP_LOGI(TAG,
-                     "CMD applied in sample task: CH1=0x%02X CH2=0x%02X %luHz device=%s filter1=%s filter2=%s",
-                     (unsigned int)current_ch1_config,
-                     (unsigned int)current_ch2_config,
-                     (unsigned long)(1000000UL / current_sample_interval_us),
-                     on_off_str(device_enabled),
-                     on_off_str(ch1_filter_enabled != 0),
-                     on_off_str(ch2_filter_enabled != 0));
-            continue;
+                     "CMD applied (selective): changed[rate=%d ch1=%d ch2=%d] device=%s",
+                     (int)rate_changed, (int)ch1_changed, (int)ch2_changed,
+                     on_off_str(device_enabled));
+            /* 采样率未变：本tick照常继续采样，无断点 */
         }
 
         if (pending_ticks > 1) {

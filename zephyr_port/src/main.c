@@ -543,52 +543,79 @@ static void sample_thread(void *arg1, void *arg2, void *arg3)
 
 		sample_control_t control = {0};
 		if (k_msgq_get(&s_control_queue, &control, K_NO_WAIT) == 0) {
-			k_timer_stop(&s_sample_timer);
-			/* drain any pending semaphore */
-			while (k_sem_take(&s_sample_sem, K_NO_WAIT) == 0) {
+			/* 按需选择性应用（与ESP-IDF版保持一致）：
+			 * - 未变化的通道不动它的滤波状态（波形不抖）；
+			 * - 采样率未变就不重启定时器（本tick继续采样，无断点）；
+			 * - 增益未变就不重写SPI寄存器；
+			 * - 与当前配置完全一致的命令已在 host_cmd_received 拦截。 */
+			bool rate_changed = (control.sample_interval_us != current_sample_interval_us);
+			bool ch1_gain_changed = (control.ch1_config != current_ch1_config);
+			bool ch2_gain_changed = (control.ch2_config != current_ch2_config);
+			bool ch1_changed = ch1_gain_changed || (control.ch1_filter != ch1_filter_enabled);
+			bool ch2_changed = ch2_gain_changed || (control.ch2_filter != ch2_filter_enabled);
+			bool any_filter_reset = rate_changed || ch1_changed || ch2_changed;
+
+			if (rate_changed) {
+				k_timer_stop(&s_sample_timer);
+				/* drain any pending semaphore */
+				while (k_sem_take(&s_sample_sem, K_NO_WAIT) == 0) {
+				}
 			}
 
-			ks1092_write_channel_regs(control.ch1_config, control.ch2_config);
+			if (ch1_gain_changed || ch2_gain_changed) {
+				ks1092_write_channel_regs(control.ch1_config, control.ch2_config);
+			}
 			current_ch1_config = control.ch1_config;
 			current_ch2_config = control.ch2_config;
-			current_sample_interval_us = control.sample_interval_us;
 			ch1_filter_enabled = control.ch1_filter;
 			ch2_filter_enabled = control.ch2_filter;
 			device_enabled = control.enabled;
 
-			iir_filter_set_sample_rate(current_sample_interval_us);
-			ksfilter_set_sample_rate(current_sample_interval_us);
-			heart_rate_set_sample_rate(current_sample_interval_us);
-			iir_filter_reset();
-			iir1_filter_reset();
-			ksfilter_reset();
-			ksfilter1_reset();
-			lvbo_reset();
-			s_filter_generation++;
+			if (rate_changed) {
+				current_sample_interval_us = control.sample_interval_us;
+				iir_filter_set_sample_rate(current_sample_interval_us);
+				ksfilter_set_sample_rate(current_sample_interval_us);
+				heart_rate_set_sample_rate(current_sample_interval_us);
+			}
+			if (ch1_changed || rate_changed) {
+				/* 通道1相关：心率和脱落检测都基于通道1 */
+				iir_filter_reset();
+				ksfilter_reset();
+				lvbo_reset();
+				smooth_primed1 = false;
+				memset(avg_rate_list, 0, sizeof(avg_rate_list));
+				memset(lo_buf, 0, sizeof(lo_buf));
+				avg_rate = 0;
+				count_HR = 0;
+				lo_idx = 0;
+				lo_count = 0;
+			}
+			if (ch2_changed || rate_changed) {
+				iir1_filter_reset();
+				ksfilter1_reset();
+				smooth_primed2 = false;
+			}
+			if (any_filter_reset) {
+				s_filter_generation++;
+				last_sample_ms = 0;
+				k_msgq_purge(&s_transport_queue);
+			}
 
-			smooth_primed1 = false;
-			smooth_primed2 = false;
-			memset(avg_rate_list, 0, sizeof(avg_rate_list));
-			memset(lo_buf, 0, sizeof(lo_buf));
-			avg_rate = 0;
-			count_HR = 0;
-			lo_idx = 0;
-			lo_count = 0;
-			last_sample_ms = 0;
-
-			k_msgq_purge(&s_transport_queue);
-
-			k_timer_start(&s_sample_timer,
-				      K_USEC(current_sample_interval_us),
-				      K_USEC(current_sample_interval_us));
-			LOG_INF("CMD applied: CH1=0x%02X CH2=0x%02X %luHz device=%s filter1=%s filter2=%s",
-				(unsigned int)current_ch1_config,
-				(unsigned int)current_ch2_config,
-				(unsigned long)(1000000UL / current_sample_interval_us),
-				on_off_str(device_enabled),
-				on_off_str(ch1_filter_enabled != 0),
-				on_off_str(ch2_filter_enabled != 0));
-			continue;
+			if (rate_changed) {
+				k_timer_start(&s_sample_timer,
+					      K_USEC(current_sample_interval_us),
+					      K_USEC(current_sample_interval_us));
+				LOG_INF("CMD applied (rate %luHz): filter1=%s filter2=%s device=%s",
+					(unsigned long)(1000000UL / current_sample_interval_us),
+					on_off_str(ch1_filter_enabled != 0),
+					on_off_str(ch2_filter_enabled != 0),
+					on_off_str(device_enabled));
+				continue; /* 等新定时器的第一个tick */
+			}
+			LOG_INF("CMD applied (selective): changed[rate=%d ch1=%d ch2=%d] device=%s",
+				(int)rate_changed, (int)ch1_changed, (int)ch2_changed,
+				on_off_str(device_enabled));
+			/* 采样率未变：本tick照常继续采样，无断点 */
 		}
 
 		adc_reading_t reading1 = {0};
