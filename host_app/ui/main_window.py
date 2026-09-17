@@ -114,15 +114,21 @@ class MainWindow(QMainWindow):
         self.parser = FrameParser()
         self.ble = BleLink(self.parser)
         self.ble.frames.connect(self.on_batch)
-        self.ble.state_changed.connect(self.on_link_state)
+        self.ble.state_changed.connect(self.on_ble_state)
         self.ble.scan_hit.connect(self.on_scan_hit)
         self.ble.log.connect(self.log)
         self.ble.start()
 
         self.serial = SerialLink(self.parser)
         self.serial.frames.connect(self.on_batch)
-        self.serial.state_changed.connect(self.on_link_state)
+        self.serial.state_changed.connect(self.on_serial_state)
         self.serial.log.connect(self.log)
+
+        # 最近一次已下发给设备的命令（按连接方式区分）：
+        # 完全相同的命令不再重复下发，避免设备重复重置、波形抖动；
+        # 连接状态一变化就清空，保证重连后第一条命令一定下发。
+        self._last_ble_cmd: bytes | None = None
+        self._last_serial_cmd: bytes | None = None
 
         self.fs = 500.0
         # 内部信号发生器（仅供打包自检验证，不在界面上出现）
@@ -415,6 +421,14 @@ class MainWindow(QMainWindow):
         self.cmb_device.addItem(f"{name}（{addr}）", addr)
         self.cmb_device.setCurrentIndex(self.cmb_device.count() - 1)
 
+    def on_ble_state(self, state: str, msg: str) -> None:
+        self._last_ble_cmd = None
+        self.on_link_state(state, msg)
+
+    def on_serial_state(self, state: str, msg: str) -> None:
+        self._last_serial_cmd = None
+        self.on_link_state(state, msg)
+
     def on_link_state(self, state: str, msg: str) -> None:
         colors = {ST_IDLE: QUIET, ST_SCANNING: WARNING, ST_CONNECTING: WARNING,
                   ST_CONNECTED: SUCCESS, ST_DISCONNECTED: DANGER}
@@ -448,6 +462,27 @@ class MainWindow(QMainWindow):
 
     # ================================================================ 设备设置
 
+    def _send_device_command(self, ch1: int, ch2: int, sr: int,
+                             f1: int, f2: int, sw: int) -> bool:
+        """下发6字节设置命令；与最近一次已下发的完全一致时不重复发送。
+
+        连续点击「应用设置/暂停数据流」但配置没变时，设备不会再收到
+        重复命令，也就不会重复重置滤波导致波形抖动。
+        返回是否真的发送了。
+        """
+        data = bytes((ch1 & 0xFF, ch2 & 0xFF, sr & 0xFF,
+                      f1 & 0xFF, f2 & 0xFF, sw & 0xFF))
+        attr = "_last_serial_cmd" if self.serial_mode else "_last_ble_cmd"
+        if getattr(self, attr, None) == data:
+            self.log("设置与设备当前一致，未重复下发。")
+            return False
+        setattr(self, attr, data)
+        if self.serial_mode:
+            self.serial.send_command(ch1, ch2, sr, f1, f2, sw)
+        else:
+            self.ble.send_command(ch1, ch2, sr, f1, f2, sw)
+        return True
+
     def apply_settings(self) -> None:
         if self.generator is not None:
             self.log("内部信号源运行中，设置不会发给真实设备。")
@@ -473,10 +508,7 @@ class MainWindow(QMainWindow):
             "ch2set": f"0x{ch2set:02X}", "sample_rate": f"{fs:.0f}Hz",
             "filter_ch1": bool(f1), "filter_ch2": bool(f2),
         }
-        if self.serial_mode:
-            self.serial.send_command(ch1set, ch2set, sr_code, f1, f2, 1)
-        else:
-            self.ble.send_command(ch1set, ch2set, sr_code, f1, f2, 1)
+        self._send_device_command(ch1set, ch2set, sr_code, f1, f2, 1)
 
     def stop_stream(self) -> None:
         if self.generator is not None:
@@ -485,14 +517,11 @@ class MainWindow(QMainWindow):
         _, ch1set, ch2set = GAINS[gi]
         si = max(0, self.cmb_sr.currentIndex())
         _, sr_code, _ = SAMPLE_RATES[si]
-        cmd = (ch1set, ch2set, sr_code,
-               1 if self.chk_f1.isChecked() else 0,
-               1 if self.chk_f2.isChecked() else 0, 0)
-        if self.serial_mode:
-            self.serial.send_command(*cmd)
-        else:
-            self.ble.send_command(*cmd)
-        self.log("已通知设备暂停发送数据。")
+        if self._send_device_command(
+                ch1set, ch2set, sr_code,
+                1 if self.chk_f1.isChecked() else 0,
+                1 if self.chk_f2.isChecked() else 0, 0):
+            self.log("已通知设备暂停发送数据。")
 
     # ================================================================ 波形
 
