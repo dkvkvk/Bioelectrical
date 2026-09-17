@@ -29,6 +29,7 @@ static K_KERNEL_STACK_DEFINE(uart_rx_stack, UART_RX_THREAD_STACK_SIZE);
 static struct k_thread uart_rx_thread_data;
 
 extern void uart_on_cmd_received(const uint8_t *cmd, int len);
+extern void main_force_next_cmd(void);
 
 static bool enter_uart_link(void)
 {
@@ -38,6 +39,7 @@ static bool enter_uart_link(void)
 
 	if (!s_uart_connected) {
 		s_uart_connected = true;
+		main_force_next_cmd(); /* 新连接的第一条命令强制执行，打开通道2 */
 		ble_stop_advertising();
 	}
 

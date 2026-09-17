@@ -28,6 +28,7 @@ static volatile bool s_uart_connected;
 static volatile int64_t s_uart_last_rx_us;
 
 extern void uart_on_cmd_received(const uint8_t *cmd, int len);
+extern void main_force_next_cmd(void);
 
 static bool enter_uart_link(void)
 {
@@ -37,6 +38,7 @@ static bool enter_uart_link(void)
 
     if (!s_uart_connected) {
         s_uart_connected = true;
+        main_force_next_cmd(); /* 新连接的第一条命令强制执行，打开通道2 */
         ble_stop_advertising();
         esp_log_level_set("*", ESP_LOG_NONE);
     }

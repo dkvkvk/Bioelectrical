@@ -49,6 +49,7 @@ static volatile bool is_connected;
 static volatile bool notify_enabled;
 
 extern void ble_on_cmd_received(const uint8_t *cmd, int len);
+extern void main_force_next_cmd(void);
 
 /* ------------------------------------------------------------------ */
 /* GATT callbacks                                                     */
@@ -131,6 +132,7 @@ static void on_connected(struct bt_conn *conn, uint8_t err)
 
 	default_conn = bt_conn_ref(conn);
 	is_connected = true;
+	main_force_next_cmd(); /* 新连接的第一条命令强制执行，打开通道2 */
 	notify_enabled = false;
 	LOG_INF("CONNECT [OK]");
 

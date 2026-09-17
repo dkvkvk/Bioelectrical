@@ -72,6 +72,16 @@ static volatile uint8_t current_ch1_config = KS1092_CH1_CONFIG;
 static volatile uint8_t current_ch2_config = KS1092_CH2_CONFIG;
 static volatile uint32_t s_filter_generation = 0;
 
+/* 开机/每次新连接后的第一条命令强制执行并重写KS寄存器：
+ * 设备重置后芯片通道2默认是关闭的，必须收到一次寄存器写入才会打开；
+ * 同一连接内后续重复的相同命令（保活）仍按需跳过，避免波形抖动。 */
+static volatile bool s_force_apply_next_cmd = true;
+
+void main_force_next_cmd(void)
+{
+    s_force_apply_next_cmd = true;
+}
+
 static adc_oneshot_unit_handle_t adc1_handle;
 static adc_cali_handle_t adc1_signal_cali_handle;
 static adc_cali_handle_t adc1_batt_cali_handle;
@@ -110,6 +120,7 @@ typedef struct {
     uint8_t ch2_filter;
     uint8_t enabled;
     uint32_t sample_interval_us;
+    bool force_regs;
 } sample_control_t;
 
 typedef struct {
@@ -458,13 +469,20 @@ static void host_cmd_received(const uint8_t *cmd, int len, bool from_uart)
 
     uint32_t sample_interval_us = cmd_sample_interval_us(cmd[2], from_uart);
 
+    /* 上位机重复命令拦截（v1.2.3）的例外：开机或新连接后的第一条命令
+     * 总是强制执行——设备重置后通道2默认关闭，需要一次真实的寄存器写
+     * 入才会打开；此时命令与固件默认配置完全相同，不豁免就会被拦截。 */
+    bool force_apply = s_force_apply_next_cmd;
+    s_force_apply_next_cmd = false;
+
     // 上位机（尤其串口模式）会周期性重发相同设置命令作为保活。设置与
     // 当前完全一致时直接忽略：避免每次保活都重置滤波器、重启采样定时器，
     // 在心电数据上留下周期性毛刺（会干扰HRV分析）。volatile 变量先取快照再比。
     uint8_t cur_ch1 = current_ch1_config;
     uint8_t cur_ch2 = current_ch2_config;
     uint32_t cur_interval = current_sample_interval_us;
-    if (cmd[0] == cur_ch1 &&
+    if (!force_apply &&
+        cmd[0] == cur_ch1 &&
         cmd[1] == cur_ch2 &&
         (cmd[3] != 0x00) == (ch1_filter_enabled != 0) &&
         (cmd[4] != 0x00) == (ch2_filter_enabled != 0) &&
@@ -481,6 +499,7 @@ static void host_cmd_received(const uint8_t *cmd, int len, bool from_uart)
         .ch2_filter = (cmd[4] != 0x00),
         .enabled = (cmd[5] != 0x00),
         .sample_interval_us = sample_interval_us,
+        .force_regs = force_apply,
     };
 
     configASSERT(s_control_queue != NULL);
@@ -653,7 +672,9 @@ static void sample_task(void *arg)
                 ulTaskNotifyTake(pdTRUE, 0);
             }
 
-            if (ch1_gain_changed || ch2_gain_changed) {
+            if (control.force_regs || ch1_gain_changed || ch2_gain_changed) {
+                /* force_regs：连接后首条命令无条件重写，确保设备重置后
+                 * 通道2被重新打开（即便增益值与固件默认一致） */
                 ks1092_write_channel_regs(control.ch1_config, control.ch2_config);
             }
             current_ch1_config = control.ch1_config;

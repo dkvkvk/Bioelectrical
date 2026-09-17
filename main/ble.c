@@ -56,6 +56,7 @@ static uint8_t conn_param_attempts;
 #define BLE_CONN_PARAM_MAX_ATTEMPTS 6
 
 extern void ble_on_cmd_received(const uint8_t *cmd, int len);
+extern void main_force_next_cmd(void);
 
 static void ble_advertise(void);
 
@@ -121,6 +122,7 @@ static bool enter_ble_link(uint16_t handle) {
     is_connected = true;
     notify_enabled = false;
     conn_param_attempts = 0;
+    main_force_next_cmd(); /* 新连接的第一条命令强制执行，打开通道2 */
     schedule_conn_param_update(BLE_CONN_PARAM_FIRST_DELAY_US);
     return true;
 }
