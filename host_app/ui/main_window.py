@@ -30,25 +30,35 @@ from ui.analysis_window import AnalysisWindow
 from ui.recordings_window import RecordingsWindow
 
 # 两级增益（与芯片官方评估软件一致）：第一级 × 第二级 = 总放大倍数。
-# 寄存器值与协议文档一致：KS108X/KS109X 家族共用同一套 CH1SET/CH2SET 编码。
-STAGE1_GAINS = [9, 17]                    # 第一级增益（倍）
-STAGE2_GAINS = [40, 60, 80, 120, 160]     # 第二级增益（倍）
-# (第一级, 第二级) -> 寄存器值
-CH1_SET_REG = {
-    (9, 40): 0x20, (9, 60): 0x30, (9, 80): 0x34, (9, 120): 0x38, (9, 160): 0x3C,
-    (17, 40): 0x22, (17, 60): 0x32, (17, 80): 0x36, (17, 120): 0x3A, (17, 160): 0x3E,
-}
-CH2_SET_REG = {
-    (9, 40): 0x00, (9, 60): 0x10, (9, 80): 0x14, (9, 120): 0x18, (9, 160): 0x1C,
-    (17, 40): 0x02, (17, 60): 0x12, (17, 80): 0x16, (17, 120): 0x1A, (17, 160): 0x1E,
-}
-# 芯片型号（显示名, 是否双通道）。x1=单通道, x2=双通道；单通道时隐藏通道2。
-# 当前设备焊的是 KS1092。
+# 寄存器编码（KS108X/KS109X 家族共用同一套位域）：
+#   CH1SET = 0x20 | (二级档位<<2) | 一级位；CH2SET 同式，基值 0x00。
+#   一级位：9x=0；9系列高档 17x=0x02；8系列低档 5x=0x01。
+#   二级档位：40x=0, 60x=4, 80x=5, 120x=6, 160x=7（9系列，已验证）；
+#            10x=1, 20x=2, 30x=3（8系列，位域规律推导，待厂商手册最终确认）。
+# 8系列总倍率 50x~720x、9系列 360x~2720x，与官网标称一致。
+KS109X_STAGE1 = [9, 17]
+KS109X_STAGE2 = [40, 60, 80, 120, 160]
+KS108X_STAGE1 = [5, 9]
+KS108X_STAGE2 = [10, 20, 30, 40, 60, 80]
+_STAGE1_BIT = {9: 0x00, 17: 0x02, 5: 0x01}
+_STAGE2_FIELD = {40: 0, 60: 4, 80: 5, 120: 6, 160: 7, 10: 1, 20: 2, 30: 3}
+
+
+def _ch1set_reg(stage1: int, stage2: int) -> int:
+    return 0x20 | (_STAGE2_FIELD[stage2] << 2) | _STAGE1_BIT[stage1]
+
+
+def _ch2set_reg(stage1: int, stage2: int) -> int:
+    return (_STAGE2_FIELD[stage2] << 2) | _STAGE1_BIT[stage1]
+
+
+# 芯片型号（显示名, 是否双通道, 系列）。KS108X=心电（有心率）, KS109X=脑电。
+# 当前设备焊的是 KS1092。默认档 9x×40x 对应上电默认寄存器 0x20/0x00。
 CHIPS = [
-    ("KS1081", False),
-    ("KS1082", True),
-    ("KS1091", False),
-    ("KS1092", True),
+    ("KS1081", False, "ks108x"),
+    ("KS1082", True, "ks108x"),
+    ("KS1091", False, "ks109x"),
+    ("KS1092", True, "ks109x"),
 ]
 DEFAULT_CHIP_INDEX = 3
 # 采样率（显示名, SR 字节, 实际Hz）
@@ -280,6 +290,22 @@ class MainWindow(QMainWindow):
 
         side = QVBoxLayout()
         side.addWidget(self._build_control_group())
+        # ---- 8系列（心电）大字心率面板：选中心电芯片时显示 ----
+        self.hr_panel = QGroupBox("心率")
+        hrv = QVBoxLayout(self.hr_panel)
+        self.lbl_hr_big = QLabel("—")
+        self.lbl_hr_big.setAlignment(Qt.AlignCenter)
+        big = self.lbl_hr_big.font()
+        big.setPointSize(24)
+        big.setBold(True)
+        self.lbl_hr_big.setFont(big)
+        hr_unit = QLabel("次/分")
+        hr_unit.setAlignment(Qt.AlignCenter)
+        hr_unit.setProperty("muted", True)
+        hrv.addWidget(self.lbl_hr_big)
+        hrv.addWidget(hr_unit)
+        self.hr_panel.setVisible(False)  # 默认 KS1092（脑电）不显示
+        side.addWidget(self.hr_panel)
         side.addWidget(self._build_record_group())
         side.addStretch(1)
         mid.addLayout(side, stretch=1)
@@ -306,7 +332,7 @@ class MainWindow(QMainWindow):
 
         # ---- 芯片型号 ----
         self.cmb_chip = QComboBox()
-        for name, _ in CHIPS:
+        for name, _, _ in CHIPS:
             self.cmb_chip.addItem(name)
         self.cmb_chip.setCurrentIndex(DEFAULT_CHIP_INDEX)
         r = row()
@@ -349,7 +375,7 @@ class MainWindow(QMainWindow):
         self.btn_stop_stream.clicked.connect(self.stop_stream)
         lay.addWidget(self.btn_apply)
         lay.addWidget(self.btn_stop_stream)
-        self._update_gain_labels()
+        self._repopulate_gain_combos()
         self.cmb_chip.currentIndexChanged.connect(self._on_chip_changed)
         return g
 
@@ -362,13 +388,9 @@ class MainWindow(QMainWindow):
         h.setSpacing(4)
         h.addWidget(QLabel(f"通道{ch}增益"))
         cmb_a = QComboBox()
-        cmb_a.setMinimumWidth(56)
-        for v in STAGE1_GAINS:
-            cmb_a.addItem(f"{v}x")
+        cmb_a.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         cmb_b = QComboBox()
-        cmb_b.setMinimumWidth(64)
-        for v in STAGE2_GAINS:
-            cmb_b.addItem(f"{v}x")
+        cmb_b.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         total = QLabel()
         total.setProperty("muted", True)
         if ch == 1:
@@ -383,6 +405,34 @@ class MainWindow(QMainWindow):
         h.addWidget(total, stretch=1)
         return w
 
+    def _chip_line(self) -> str:
+        return CHIPS[max(0, self.cmb_chip.currentIndex())][2]
+
+    def _stage1_options(self):
+        return KS108X_STAGE1 if self._chip_line() == "ks108x" else KS109X_STAGE1
+
+    def _stage2_options(self):
+        return KS108X_STAGE2 if self._chip_line() == "ks108x" else KS109X_STAGE2
+
+    def _repopulate_gain_combos(self) -> None:
+        """按当前芯片系列重填增益档位，并回到默认档 9x × 40x。"""
+        s1, s2 = self._stage1_options(), self._stage2_options()
+        for cmb_a in (self.cmb_g1a, self.cmb_g2a):
+            cmb_a.blockSignals(True)
+            cmb_a.clear()
+            for v in s1:
+                cmb_a.addItem(f"{v}x")
+            cmb_a.setCurrentIndex(s1.index(9))
+            cmb_a.blockSignals(False)
+        for cmb_b in (self.cmb_g1b, self.cmb_g2b):
+            cmb_b.blockSignals(True)
+            cmb_b.clear()
+            for v in s2:
+                cmb_b.addItem(f"{v}x")
+            cmb_b.setCurrentIndex(s2.index(40))
+            cmb_b.blockSignals(False)
+        self._update_gain_labels()
+
     def _update_gain_labels(self) -> None:
         s1a, s1b, s2a, s2b, _, _ = self._gain_regs()
         self.lbl_g1.setText(f"= {s1a * s1b}x")
@@ -390,18 +440,22 @@ class MainWindow(QMainWindow):
 
     def _gain_regs(self):
         """返回 (通道1第一级, 通道1第二级, 通道2第一级, 通道2第二级, CH1SET, CH2SET)。"""
-        s1a = STAGE1_GAINS[max(0, self.cmb_g1a.currentIndex())]
-        s1b = STAGE2_GAINS[max(0, self.cmb_g1b.currentIndex())]
-        s2a = STAGE1_GAINS[max(0, self.cmb_g2a.currentIndex())]
-        s2b = STAGE2_GAINS[max(0, self.cmb_g2b.currentIndex())]
-        return s1a, s1b, s2a, s2b, CH1_SET_REG[(s1a, s1b)], CH2_SET_REG[(s2a, s2b)]
+        s1_opts = self._stage1_options()
+        s2_opts = self._stage2_options()
+        s1a = s1_opts[max(0, self.cmb_g1a.currentIndex())]
+        s1b = s2_opts[max(0, self.cmb_g1b.currentIndex())]
+        s2a = s1_opts[max(0, self.cmb_g2a.currentIndex())]
+        s2b = s2_opts[max(0, self.cmb_g2b.currentIndex())]
+        return s1a, s1b, s2a, s2b, _ch1set_reg(s1a, s1b), _ch2set_reg(s2a, s2b)
 
     def _on_chip_changed(self, idx: int) -> None:
-        """单通道芯片隐藏通道2的设置与波形（官方评估软件行为一致）。"""
-        dual = CHIPS[idx][1]
+        """换芯片：按系列换增益档位；单通道隐藏通道2；8系列（心电）显示心率面板。"""
+        _, dual, line = CHIPS[idx]
+        self._repopulate_gain_combos()
         self.row_gain2.setVisible(dual)
         self.chk_f2.setVisible(dual)
         self.plot2.setVisible(dual)
+        self.hr_panel.setVisible(line == "ks108x")
         if not dual:
             self.log(f"芯片：{CHIPS[idx][0]}，已隐藏通道2设置与波形。")
 
@@ -630,6 +684,7 @@ class MainWindow(QMainWindow):
         self.curve2.setData([])
         self.lbl_battery.setText("电量：—")
         self.lbl_hr.setText("心率：—")
+        self.lbl_hr_big.setText("—")
         self.lbl_lead.setText("电极：—")
         self.lbl_frames.setText("数据批次：0（坏 0）")
         if self.recorder.active:
@@ -694,6 +749,7 @@ class MainWindow(QMainWindow):
             self.lbl_battery.setText(
                 f"电量：{batt}%" if batt is not None else "电量：—")
             self.lbl_hr.setText(f"心率：{b['heart_rate']} bpm")
+            self.lbl_hr_big.setText(str(b["heart_rate"]))
             if b["lead_off"]:
                 self.lbl_lead.setText("电极：脱落！")
                 self.lbl_lead.setStyleSheet(f"color:{DANGER}; font-weight:bold;")
@@ -739,13 +795,10 @@ class MainWindow(QMainWindow):
                 "还没有数据来源：请先连接设备（蓝牙或串口）。")
             return
         _, _, _, _, ch1set, ch2set = self._gain_regs()
+        s1a, s1b, s2a, s2b, _, _ = self._gain_regs()
         settings = getattr(self, "_settings_snapshot", None) or {
             "chip": CHIPS[max(0, self.cmb_chip.currentIndex())][0],
-            "gain": "通道1 {}x / 通道2 {}x".format(
-                STAGE1_GAINS[max(0, self.cmb_g1a.currentIndex())]
-                * STAGE2_GAINS[max(0, self.cmb_g1b.currentIndex())],
-                STAGE1_GAINS[max(0, self.cmb_g2a.currentIndex())]
-                * STAGE2_GAINS[max(0, self.cmb_g2b.currentIndex())]),
+            "gain": f"通道1 {s1a * s1b}x / 通道2 {s2a * s2b}x",
             "ch1set": f"0x{ch1set:02X}", "ch2set": f"0x{ch2set:02X}",
             "sample_rate": f"{self.fs:.0f}Hz",
             "filter_ch1": self.chk_f1.isChecked(),

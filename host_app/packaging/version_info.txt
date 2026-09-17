@@ -5,8 +5,8 @@
 
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 2, 4, 0),
-    prodvers=(1, 2, 4, 0),
+    filevers=(1, 2, 5, 0),
+    prodvers=(1, 2, 5, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -21,12 +21,12 @@ VSVersionInfo(
           '080404b0',
           [StringStruct('CompanyName', 'HeartHRV'),
            StringStruct('FileDescription', '心电HRV采集分析'),
-           StringStruct('FileVersion', '1.2.4'),
+           StringStruct('FileVersion', '1.2.5'),
            StringStruct('InternalName', 'HeartHRV'),
            StringStruct('LegalCopyright', 'Copyright (C) 2026'),
            StringStruct('OriginalFilename', 'HeartHRV.exe'),
            StringStruct('ProductName', '心电HRV采集分析'),
-           StringStruct('ProductVersion', '1.2.4')])
+           StringStruct('ProductVersion', '1.2.5')])
       ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
   ]
